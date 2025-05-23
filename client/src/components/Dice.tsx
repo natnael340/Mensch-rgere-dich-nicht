@@ -7,7 +7,7 @@ interface DiceProps {
 }
 
 function Dice({ rollDice, value: v, active }: DiceProps) {
-  const [value, setValue] = React.useState(5);
+  const [value, setValue] = React.useState(6);
   const loadingRef = React.useRef<number>(null);
   const pos_matrix = [
     [[50, 50]],
@@ -62,7 +62,7 @@ function Dice({ rollDice, value: v, active }: DiceProps) {
       loadingRef.current && clearInterval(loadingRef.current);
     }
   }, [v]);
-  console.log("Dice", value);
+
   return (
     <div
       data-testid="dice"

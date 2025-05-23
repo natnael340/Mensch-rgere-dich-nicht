@@ -181,7 +181,7 @@ function Board({
       );
     } else if (cell.type == "track") {
       let directions = computeDirection(idx);
-      console.log(trackMap[idx]);
+
       return (
         <div
           key={idx}
