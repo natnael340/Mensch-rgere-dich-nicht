@@ -1,0 +1,27 @@
+POST http://127.0.0.1:8000/game
+
+###
+
+# Join a new game
+
+POST http://127.0.0.1:8000/game/join
+Content-Type: application/json
+
+{
+  "code": "LPHQPI",
+  "name": "Bob"
+}
+
+###
+# join a new game with out code
+POST http://127.0.0.1:8000/game/join
+Content-Type: application/json
+
+{
+  "name": "Bert"
+}
+
+
+###
+# see game state
+GET http://127.0.0.1:8000/game/LPHQPI

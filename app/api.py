@@ -64,17 +64,18 @@ async def websocket_game(websocket: WebSocket, code: str, ):
             action = data.get("action", "")
 
             if action == "start":
-                await ws_manager.broadcast(code, {"type": "state", "message": "game_started", "current_turn": game.players[game.current_turn].dict()})
+                await ws_manager.broadcast(code, {"type": "game_started", "current_turn": game.players[game.current_turn].dict()})
             elif action == "roll":
                 try:
-                    roll = game_manager.roll_dice(code, player_id)
-                    await ws_manager.broadcast(code, {"type": "roll", "player": player_id, "roll": roll})
+                    roll, next_turn = game_manager.roll_dice(code, player_id)
+                    await ws_manager.broadcast(code, {"type": "roll", "player": player_id, "roll": roll, "next_turn": next_turn.dict() if next_turn else None})
+                   
                 except ValueError as e:
                     await websocket.send_json({"type": "error", "message": str(e)})
             elif action == "move":
-                piece_index = data.get("piece_index")
+                token_idx = data.get("token_idx")
                 try:
-                    positions, next_player, just_won = game_manager.move_piece(code, player_id, piece_index)
+                    positions, next_player, just_won = game_manager.move_piece(code, player_id, token_idx)
                     await ws_manager.broadcast(code, {"type": "move", "player": player_id, "positions": positions, "next_player": next_player.dict() if next_player else None})
                     if just_won:
                         await ws_manager.broadcast(code, {"type": "win", "winner": player_id, "name": name})

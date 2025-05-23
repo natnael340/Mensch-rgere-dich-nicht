@@ -93,8 +93,13 @@ class GameManager:
         
         roll = random.randint(1, 6)
         game.pending_roll = roll
+        next_turn = None
+        if roll != 6 and all(pos == -1 for pos in game.positions[player_id]):
+            game.pending_roll = None
+            game.current_turn = (game.current_turn + 1) % len(game.players)
+            next_turn = game.players[game.current_turn]
 
-        return roll
+        return roll, next_turn
 
     def move_piece(self, code: str, player_id: str, piece_index: int) -> Tuple[int, Optional[Player], bool]:
         """Move a piece for a player."""
@@ -144,6 +149,6 @@ class GameManager:
         else:
             next_player = None
 
-        return new_position, next_player, just_won
+        return game.positions[player_id], next_player, just_won
 
 game_manager = GameManager()

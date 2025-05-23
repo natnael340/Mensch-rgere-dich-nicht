@@ -1,12 +1,24 @@
 import React from "react";
 import Pwn from "./Pwn";
+import { Occupant } from "../types";
 
-interface CircleProps {
-  color: "red" | "blue" | "green" | "yellow";
-  filled: boolean;
+interface BaseCircleProps {
+  filled?: boolean;
   letter?: string;
-  on?: boolean;
+  pwn?: Occupant | null;
+  onMove: (occupant: Occupant) => void;
 }
+interface FilledCircleProps extends BaseCircleProps {
+  filled: true;
+  color: "red" | "blue" | "green" | "yellow";
+}
+
+interface UnfilledCircleProps extends BaseCircleProps {
+  filled?: false;
+  color?: never;
+}
+
+type CircleProps = FilledCircleProps | UnfilledCircleProps;
 interface ColorProps {
   border: string;
   bg: string;
@@ -20,7 +32,7 @@ interface ColorMap {
   yellow: ColorProps;
 }
 
-function Circle({ color, filled, letter, on = false }: CircleProps) {
+function Circle({ color, filled, letter, pwn = null, onMove }: CircleProps) {
   const colorMap: ColorMap = {
     red: {
       border: "border-black",
@@ -43,12 +55,16 @@ function Circle({ color, filled, letter, on = false }: CircleProps) {
       pwn: "bg-[#F57F17]",
     },
   };
+  const colors = { 0: "yellow", 1: "green", 2: "blue", 3: "red" };
+
   return (
     <div
-      className={`w-8 h-8 rounded-full border-[1px] border-black ${colorMap[color].bg} flex items-center justify-center relative cursor-pointer`}
+      onClick={() => pwn && onMove(pwn)}
+      className={`w-8 h-8 rounded-full border-[1px] border-black ${
+        filled ? colorMap[color].bg : "bg-white"
+      } flex items-center justify-center relative cursor-pointer`}
     >
-      {on && <Pwn color={colorMap[color].pwn} />}
-
+      {pwn && <Pwn color={colorMap[pwn.color].pwn} />}
       <div className="-mt-1">{letter || ""}</div>
     </div>
   );
