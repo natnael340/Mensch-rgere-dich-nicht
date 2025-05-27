@@ -1,6 +1,6 @@
 import React from "react";
 import Pwn from "./Pwn";
-import { Occupant } from "../types";
+import { ColorType, Occupant } from "../types";
 
 interface BaseCircleProps {
   filled?: boolean;
@@ -10,7 +10,7 @@ interface BaseCircleProps {
 }
 interface FilledCircleProps extends BaseCircleProps {
   filled: true;
-  color: "red" | "blue" | "green" | "yellow";
+  color: ColorType;
 }
 
 interface UnfilledCircleProps extends BaseCircleProps {

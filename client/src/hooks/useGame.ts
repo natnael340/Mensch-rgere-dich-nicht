@@ -116,7 +116,11 @@ export function useGame(
           break;
 
         case "win":
-          alert(`Player ${msg.player_id} has won!`);
+          notifyUser(`🏆🏆🏆 ${msg.winner.name} Won!!! Game Over.`);
+          ws.close();
+          setTimeout(() => {
+            window.location.href = "/";
+          }, 5000);
           break;
 
         case "error":

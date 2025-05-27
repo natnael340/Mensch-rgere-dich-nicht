@@ -26,11 +26,11 @@ function App() {
       setLoading(false);
       return;
     }
-    const { game_id } = await response.json();
+    const { code } = await response.json();
     response = await fetch(`http://localhost:8080/game/join/`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, code: game_id }),
+      body: JSON.stringify({ name, code }),
     });
 
     if (!response.ok) {
@@ -39,9 +39,9 @@ function App() {
       return;
     }
     const { token, player_id } = await response.json();
-    localStorage.setItem(`token-${game_id}`, token);
-    localStorage.setItem(`player_id-${game_id}`, player_id);
-    window.location.href = `/lobby/${game_id}`;
+    localStorage.setItem(`token-${code}`, token);
+    localStorage.setItem(`player_id-${code}`, player_id);
+    window.location.href = `/lobby/${code}`;
     setLoading(false);
   };
 

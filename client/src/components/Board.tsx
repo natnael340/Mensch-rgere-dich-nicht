@@ -3,7 +3,7 @@ import { layout, LayoutCell } from "./GameLayout";
 import Dice from "./Dice";
 import GameSP from "./GameSP";
 import Circle from "./Circle";
-import { Occupant } from "../types";
+import { ColorType, Occupant } from "../types";
 
 type Positions = Record<string, number[]>;
 
@@ -13,7 +13,7 @@ interface BoardProps {
   onRoll: () => void;
   onMove: (tokenIdx: number) => void;
   rollValue: Record<string, number | null>;
-  colorMap: Record<string, "blue" | "red" | "green" | "yellow">;
+  colorMap: Record<string, ColorType>;
   currentTurn: string;
 }
 
@@ -44,9 +44,7 @@ function Board({
   }
 
   const getHomeTokenFor = useCallback(
-    (
-      pcolor: "blue" | "red" | "green" | "yellow"
-    ): Record<number, Occupant | null> | null => {
+    (pcolor: ColorType): Record<number, Occupant | null> | null => {
       const pid = Object.keys(colorMap).find((key) => colorMap[key] == pcolor);
       if (!pid) return null;
       const homeidx: Record<number, Occupant | null> = {};
@@ -79,7 +77,7 @@ function Board({
     }
     return results;
   };
-  console.log("TrackMap", positions);
+
   const trackMap = useMemo(() => {
     const m: Record<number, Occupant | null> = {};
     layout.forEach((cell, idx) => {
@@ -98,6 +96,23 @@ function Board({
 
     return rolls;
   }, [rollValue]);
+
+  const getFinishTrackOccupant = useCallback(
+    (
+      playerId: "red" | "yellow" | "green" | "blue",
+      trackIdx: number
+    ): Occupant | null => {
+      const pid = Object.keys(colorMap).find(
+        (key) => colorMap[key] == playerId
+      );
+      if (!pid) return null;
+
+      const idx = positions[pid].findIndex((pos) => pos == trackIdx);
+      if (idx !== -1) return { playerId: pid, tokenIdx: idx, color: playerId };
+      return null;
+    },
+    [positions]
+  );
 
   const moveToken = (occupant: Occupant) => {
     if (occupant.playerId == myPlayerId) {
@@ -128,11 +143,7 @@ function Board({
             <>
               <Dice
                 rollDice={onRoll}
-                value={
-                  getRollValue[
-                    cell.playerId as "red" | "blue" | "green" | "yellow"
-                  ] ?? null
-                }
+                value={getRollValue[cell.playerId as ColorType] ?? null}
                 active={
                   colorMap[myPlayerId] == cell.playerId &&
                   currentTurn == myPlayerId
@@ -140,36 +151,28 @@ function Board({
               />
               <GameSP
                 onMove={moveToken}
-                color={cell.playerId as "red" | "blue" | "green" | "yellow"}
+                color={cell.playerId as ColorType}
                 active={
                   colorMap[myPlayerId] == cell.playerId &&
                   currentTurn == myPlayerId
                 }
-                player={getHomeTokenFor(
-                  cell.playerId as "red" | "blue" | "green" | "yellow"
-                )}
+                player={getHomeTokenFor(cell.playerId as ColorType)}
               />
             </>
           ) : (
             <>
               <GameSP
                 onMove={moveToken}
-                color={cell.playerId as "red" | "blue" | "green" | "yellow"}
+                color={cell.playerId as ColorType}
                 active={
                   colorMap[myPlayerId] == cell.playerId &&
                   currentTurn == myPlayerId
                 }
-                player={getHomeTokenFor(
-                  cell.playerId as "red" | "blue" | "green" | "yellow"
-                )}
+                player={getHomeTokenFor(cell.playerId as ColorType)}
               />
               <Dice
                 rollDice={onRoll}
-                value={
-                  getRollValue[
-                    cell.playerId as "red" | "blue" | "green" | "yellow"
-                  ] ?? null
-                }
+                value={getRollValue[cell.playerId as ColorType] ?? null}
                 active={
                   colorMap[myPlayerId] == cell.playerId &&
                   currentTurn == myPlayerId
@@ -197,7 +200,7 @@ function Board({
               onMove={moveToken}
               letter="A"
               pwn={trackMap[idx]}
-              color={cell.playerId as "red" | "blue" | "green" | "yellow"}
+              color={cell.playerId as ColorType}
             />
           ) : (
             <Circle onMove={moveToken} pwn={trackMap[idx]} />
@@ -205,6 +208,10 @@ function Board({
         </div>
       );
     } else if (cell.type == "finish") {
+      const occ = getFinishTrackOccupant(
+        cell.playerId as ColorType,
+        cell.trackIdx ?? 0
+      );
       return (
         <div
           key={idx}
@@ -213,8 +220,9 @@ function Board({
         >
           <Circle
             onMove={moveToken}
-            color={cell.playerId as "red" | "blue" | "green" | "yellow"}
+            color={cell.playerId as ColorType}
             filled
+            pwn={occ}
             letter={letters[(cell.trackIdx ?? 0) - 40]}
           />
         </div>

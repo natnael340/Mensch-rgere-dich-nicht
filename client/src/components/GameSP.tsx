@@ -1,9 +1,9 @@
 import React from "react";
 import Circle from "./Circle";
-import { Occupant } from "../types";
+import { ColorType, Occupant } from "../types";
 
 interface GameSPProps {
-  color: "red" | "blue" | "green" | "yellow";
+  color: ColorType;
   player: Record<number, Occupant | null> | null;
   active?: boolean;
   onMove: (occupant: Occupant) => void;

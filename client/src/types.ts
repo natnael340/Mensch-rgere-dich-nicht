@@ -17,8 +17,9 @@ type GameStateType = {
   nextTurn: number;
 };
 
+export type ColorType = "red" | "blue" | "green" | "yellow";
 export interface Occupant {
   playerId: string;
   tokenIdx: number;
-  color: "blue" | "red" | "green" | "yellow";
+  color: ColorType;
 }

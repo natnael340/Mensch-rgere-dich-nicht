@@ -19,5 +19,13 @@ class ConnectionManager:
     async def broadcast(self, code: str, message: dict):
         for connection in self.active_connections.get(code, []):
             await connection.send_json(message)
+    
+    async def clear_game(self, code: str):
+        connections = self.active_connections.pop(code, [])
+        for connection in connections:
+            try:
+                await connection.close(code=1000, reason="Game Over.")
+            except Exception:
+                pass
 
 ws_manager = ConnectionManager()
