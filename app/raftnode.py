@@ -1,10 +1,14 @@
 import asyncio
+import grpc
+
 import random
 import time
 from enum import Enum
 from typing import Optional, Dict, List, Any, Tuple
 from app.models import PeerNode, LogEntry, AppendEntriesRPC, RequestVoteRPC
 from tenacity import retry, stop_after_attempt, RetryError
+from app.raft_grpc.raft_pb2 import RequestVoteRPC as PbRV, AppendEntriesRPC as PbAE, LogEntry as PbLogEntry
+from app.raft_grpc.raft_pb2_grpc import RaftStub
 
 import httpx
 
@@ -19,6 +23,7 @@ class RaftNode:
     def __init__(self, node_id: str, peers: List[PeerNode], election_timeout: Tuple[float] = (1, 2)):
         self.node_id: str = node_id
         self.peers: List[PeerNode] = peers
+        
         self.role = Role.FOLLOWER
         self.current_term: int = 0
 
@@ -37,37 +42,63 @@ class RaftNode:
         self.election_timeout = election_timeout
         self.last_heartbeat = time.time()
 
+        # GRPC
+        self.channels = {
+            peer.id: grpc.aio.insecure_channel(f"{peer.host}:{peer.port}")
+            for peer in peers
+        }
+        self.stubs = {pid: RaftStub(chan) for pid, chan in self.channels.items()}
+
     @retry(stop=stop_after_attempt(3))
     async def send_request_vote(self, peer: PeerNode) -> Dict[str, Any]:
         """
         Send a RequestVote RPC to a peer.
         """
-        
-        response = await self.client.post(
-            f"http://{peer.host}:{peer.port}/raft/request_vote",
-            json={
-                "term": self.current_term,
-                "candidate_id": self.node_id,
-                "last_log_index": len(self.log) - 1,
-                "last_log_term": self.log[-1].term if self.log else 0
-            }
+        req = PbRV(
+            term=self.current_term,
+            candidate_id=self.node_id,
+            last_log_index=len(self.log) - 1,
+            last_log_term=self.log[-1].term if self.log else 0
         )
-        response.raise_for_status()
+        reply = await self.stubs[peer.id].RequestVote(req, timeout=1.0)
 
-        return response.json()
-    
-    async def send_append_entries(self, peer: PeerNode, msg: LogEntry) -> bool:
-        response = await self.client.post(
-            f"http://{peer.host}:{peer.port}/raft/append_entries",
-            json=msg.model_dump()
+        return {"term": reply.term, "vote_granted": reply.vote_granted}
+        
+        # response = await self.client.post(
+        #     f"http://{peer.host}:{peer.port}/raft/request_vote",
+        #     json={
+        #         "term": self.current_term,
+        #         "candidate_id": self.node_id,
+        #         "last_log_index": len(self.log) - 1,
+        #         "last_log_term": self.log[-1].term if self.log else 0
+        #     }
+        # )
+        # response.raise_for_status()
+
+        # return response.json()
+    @retry(stop=stop_after_attempt(3))
+    async def send_append_entries(self, peer: PeerNode, msg: AppendEntriesRPC) -> bool:
+        entries = [
+            PbLogEntry(term=e.term, command=list(e.command)) for e in msg.entries
+        ]
+        req = PbAE(
+            term=msg.term,
+            leader_id=self.node_id,
+            prev_log_index=msg.prev_log_index,
+            prev_log_term=msg.prev_log_term,
+            entries=entries,
+            leader_commit=msg.leader_commit
         )
-        response.raise_for_status()
-        return response.json()
+        reply = await self.stubs[peer.id].AppendEntries(req, timeout=1.0)
+
+        return {"term": reply.term, "success": reply.success}
     
     async def handle_request_vote(self, msg: RequestVoteRPC):
         """
         Handle a RequestVote RPC.
         """
+        print(f"[Node {self.node_id}] Handling RequestVote from {msg.candidate_id} for term {msg.term}")
+        print(msg)
         term = msg.term
         candidate_id = msg.candidate_id
         last_log_index = msg.last_log_index
@@ -92,9 +123,6 @@ class RaftNode:
         if (self.voted_for is None or self.voted_for == candidate_id) and up_to_date:
             self.voted_for = candidate_id
             vote_granted = True
-
-
-
         
         return {"term": self.current_term, "vote_granted": vote_granted}
         
@@ -109,7 +137,7 @@ class RaftNode:
         prev_term = msg.prev_log_term
         entries_data = msg.entries
         leader_commit = msg.leader_commit
-
+        
         # Reject if term is stale
         if term < self.current_term:
             return {"term": self.current_term, "success": False}
@@ -123,9 +151,9 @@ class RaftNode:
         if prev_index >= 0:
             if prev_index >= len(self.log) or self.log[prev_index].term != prev_term:
                 return {"term": self.current_term, "success": False}
-
+       
         # Append new entries (overwrite conflicts)
-        new_entries = [LogEntry(e["term"], tuple(e["command"])) for e in entries_data]
+        new_entries = [LogEntry(e["term"], e["command"]) for e in entries_data]
         self.log = self.log[: prev_index + 1] + new_entries
 
         # Update commit index
@@ -153,9 +181,10 @@ class RaftNode:
                 if reply.get("vote_granted"):
                     votes += 1
             except RetryError as e:
-                
-                if isinstance(e.last_attempt.exception(), httpx.ConnectTimeout):
-                    votes += 1 # Peer is unreachable, give a vote
+                last_attempt = e.last_attempt.exception()
+                if isinstance(last_attempt, grpc.aio.AioRpcError):
+                    if last_attempt.code() == grpc.StatusCode.UNAVAILABLE:
+                        votes += 1
                 else:
                     continue
             
@@ -196,7 +225,7 @@ class RaftNode:
                         leader_commit=self.commit_index
                     )
                     reply = await self.send_append_entries(peer, msg)
-                except httpx.RequestError:
+                except RetryError as e:
                     continue
 
                 if reply.get("success"):
@@ -205,7 +234,7 @@ class RaftNode:
                 else:
                     self.next_index[peer.id] = max(0, self.next_index[peer.id] - 1)
 
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(0.5)    
 
     # --------------------------------------------------------------------------
     # Client API: submit command and await commitment
@@ -273,4 +302,61 @@ class RaftNode:
             ):
                 await self.start_election()
             await asyncio.sleep(0.5)
+
+    async def append_log_entry(self, command) -> None:
+        if self.role != Role.LEADER:
+            raise Exception("Not the leader")
+        
+        entry = LogEntry(self.current_term, command)
+        self.log.append(entry)
+        new_index = len(self.log) - 1
+
+        for peer in self.peers:
+            asyncio.create_task(self._replicate_to_peer(peer))
+
+        total = len(self.peers) + 1
+        needed = total // 2 + 1
+
+        while True:
+            count = 1  # count self
+            for idx in self.match_index.values():
+                if idx >= new_index:
+                    count += 1
+            if count >= needed:
+                break
+            await asyncio.sleep(0.05)
+
+        self.commit_index = new_index
+        await self.apply_entries()
+
+    async def _replicate_to_peer(self, peer: PeerNode) -> None:
+        prev_idx  = self.next_index[peer.id] - 1
+        prev_term = self.log[prev_idx].term if prev_idx >= 0 else 0
+        entries = [
+            {"term": e.term, "command": list(e.command)}
+            for e in self.log[self.next_index[peer.id]:]
+        ]
+        rpc = AppendEntriesRPC(
+            term=self.current_term,
+            leader_id=self.node_id,
+            prev_log_index=prev_idx,
+            prev_log_term=prev_term,
+            entries=entries,
+            leader_commit=self.commit_index,
+        )
+        try:
+            reply = await self.send_append_entries(peer, rpc)
+        except RetryError:
+            return
+        
+        if reply.get("success"):
+            prev_idx  = self.next_index[peer.id] - 1
+            sent_count = len(self.log) - (prev_idx + 1)
+            new_match = prev_idx + sent_count
+            self.match_index[peer.id] = new_match
+            self.next_index[peer.id]  = new_match + 1
+        else:
+            self.next_index[peer.id] = max(0, self.next_index[peer.id] - 1)
+
+
 

@@ -25,3 +25,7 @@ Content-Type: application/json
 ###
 # see game state
 GET http://127.0.0.1:8000/game/LPHQPI
+
+###
+# see raft
+POST http://127.0.0.1:8080/raft/request_vote

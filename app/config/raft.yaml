@@ -1,11 +1,7 @@
-RAFT_NODE_ID: "node1"
 RAFT_CLUSTER:
   - id: "node1"
     host: "127.0.0.1"
-    port: 8080
+    port: 50050
   - id: "node2"
     host: "127.0.0.1"
-    port: 8081
-  - id: "node3"
-    host: "127.0.0.1"
-    port: 8082
+    port: 50051

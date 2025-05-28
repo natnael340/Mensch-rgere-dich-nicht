@@ -6,19 +6,21 @@ from contextlib import asynccontextmanager
 
 from fastapi.middleware.cors import CORSMiddleware
 from app.api import router
-from app.raft import router as raft_router, startup_event
-from app.utils.util import load_yaml
-from app.raftnode import RaftNode
+# from app.raft import router as raft_router, startup_event, grpc_server
+# from app.utils.util import load_yaml
+# from app.raftnode import RaftNode
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    raft_node = startup_event()
-    asyncio.create_task(raft_node.run())
+# @asynccontextmanager
+# async def lifespan(app: FastAPI):
     
-    yield
+#     raft_node = startup_event()
+#     asyncio.create_task(grpc_server())
+#     asyncio.create_task(raft_node.run())
+    
+#     yield
 
-app = FastAPI(title="Mensch ärgere Dich nicht", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="Mensch ärgere Dich nicht", version="0.1.0")
 
 origins = [
     "http://localhost:5173",
@@ -34,4 +36,4 @@ app.add_middleware(
 )
 
 app.include_router(router)
-app.include_router(raft_router, prefix="/raft")
+#app.include_router(raft_router, prefix="/raft")

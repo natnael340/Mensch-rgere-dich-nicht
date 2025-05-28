@@ -4,7 +4,6 @@ import random
 import string
 from app.models import Game, Player
 from app.constants import MAXIMUM_ALLOWED_PLAYERS
-from app.utils.util import raft_command
 
 NAMESPACE = uuid.UUID("4372ffc4-1acd-4df8-803f-361787fb5e06") # UUID for the namespace
 START_OFFSET = {} 
@@ -18,25 +17,27 @@ class GameManager:
         """Generate a unique game code."""
         return ''.join(random.choices(string.ascii_uppercase, k=length))
     
-    @raft_command("create_game")
+    #@raft_command("create_game")
     def _create_game(self, code: str) -> Game:
         game = Game(code=code)
         self.games[code] = game
 
-        return game 
+        return game
+    
     
     def create_game(self) -> Game:
         code = self.generate_game_code()
         while code in self.games:
             code = self.generate_game_code()
         
+
         return self._create_game(code)
     
-    @raft_command("join_game")
-    def _join_game(self, code: str, player: Dict) -> None:
+    #@raft_command("join_game")
+    def _join_game(self, code: str, player: Player) -> Game:
         game = self.games[code]
 
-        game.players.append(Player(**player))
+        game.players.append(player)
         game.init_positions()
 
         for idx, p in enumerate(game.players):
@@ -56,7 +57,7 @@ class GameManager:
         if game.started:
             raise ValueError("Game has already started.")
         
-        self._join_game(code, player.model_dump())
+        self._join_game(code, player)
 
         return game
     
@@ -81,8 +82,9 @@ class GameManager:
         
         # Add player to the game
         game = self.create_game()
-        self._join_game(game.code, player.model_dump())
 
+        self._join_game(game.code, player)
+        
         return game, player
     
     def get_game(self, code: str) -> Game:
@@ -95,20 +97,18 @@ class GameManager:
         """Convert a name to a UUID."""
         return str(uuid.uuid5(NAMESPACE, name))
     
-    def get_movable_tokens(self, game: Game, player_id: str, roll) -> List[int]:
+    def get_movable_tokens(self, game: Game, player_id: str) -> List[int]:
         movable_tokens = []
         for idx in range(4):
             try:
-                _ = self.get_token_new_position(game, player_id, idx, roll)
+                _ = self.get_token_new_position(game, player_id, idx)
                 movable_tokens.append(idx)
             except ValueError:
                 continue
         return movable_tokens
     
-    @raft_command("roll_dice")
-    def _roll_dice(self, code: str, pending_roll: Optional[int], current_turn: int):
-        """Internal method to set the pending roll and current turn."""
-        game = self.games[code]
+    def _roll_dice(self, code: str, pending_roll: Optional[int], current_turn: int) -> None:
+        game = self.get_game(code)
 
         game.pending_roll = pending_roll
         game.current_turn = current_turn
@@ -124,18 +124,20 @@ class GameManager:
             raise ValueError("Not your turn.")
         
         roll = random.randint(1, 6)
+        
+        # Store the roll in the game state
         _pending_roll = roll
         _current_turn = game.current_turn
-        
+
         next_turn = None
-        movable = self.get_movable_tokens(game, player_id, roll)
+        movable = self.get_movable_tokens(game, player_id)
         if not movable:
             _pending_roll = None
             _current_turn = self.get_next_turn(game)
             next_turn = game.players[_current_turn]
         
         self._roll_dice(code, _pending_roll, _current_turn)
-    
+
         return roll, next_turn
     
     def position_taken(self, positions, new_position, index):
@@ -143,33 +145,33 @@ class GameManager:
             if i != index and pos == new_position:
                 raise ValueError("Position already taken.")
             
-    def get_token_new_position(self, game: Game, player_id: str, token_idx: int, roll: int) -> List[int]:
+    def get_token_new_position(self, game: Game, player_id: str, token_idx: int) -> List[int]:
         positions = game.positions[player_id]
         current_position = positions[token_idx]
         start = game.start_offset[player_id]
 
         if current_position == -1:
-            if roll == 6:
+            if game.pending_roll == 6:
                 new_position =  start
             else:
                 raise ValueError("Need 6 to move out of home.")
                 
         elif 0<= current_position < 40:
             step_from_start = (current_position - start) % 40
-            total = step_from_start + roll
+            total = step_from_start + game.pending_roll
 
             if total < 40:
-                new_position = (current_position + roll) % 40
+                new_position = (current_position + game.pending_roll) % 40
             else:
                 finish_position = total - 40
                 if finish_position > 3:
                     raise ValueError("Roll too large to enter finish lane.")
                 new_position = 40 + finish_position
         else:
-            finish_step = (current_position - 40) + roll
+            finish_step = (current_position - 40) + game.pending_roll
             if finish_step > 3:
                 raise ValueError("Roll too large to move in finish lane.")
-            new_position = current_position + roll
+            new_position = current_position + game.pending_roll
 
         self.position_taken(game.positions[player_id], new_position, token_idx)
         
@@ -183,9 +185,8 @@ class GameManager:
                 break
         return iplayer
     
-    @raft_command("move_piece")
     def _move_piece(self, code: str, player_id: str, piece_index: int, new_position: int) -> Tuple[Optional[Player], bool]:
-        game = self.games[code]
+        game = self.get_game(code)
 
         game.positions[player_id][piece_index] = new_position
         game.pending_roll = None
@@ -196,7 +197,7 @@ class GameManager:
             next_player = game.players[game.current_turn]
         else:
             next_player = None
-        
+
         return next_player, just_won
 
     def move_piece(self, code: str, player_id: str, piece_index: int) -> Tuple[int, Optional[Player], bool]:
@@ -212,7 +213,7 @@ class GameManager:
         if not ( 0 <= piece_index < 4):
             raise ValueError("Invalid piece index.")
         
-        new_position = self.get_token_new_position(game, player_id, piece_index, game.pending_roll)
+        new_position = self.get_token_new_position(game, player_id, piece_index)
 
         skip = False
         if new_position < 40:
@@ -223,29 +224,13 @@ class GameManager:
                             skip = True
                             game.positions[pid][i] = -1
                 
-        next_player, just_won = self._move_piece(code, player_id, piece_index, new_position)
+        next_player, just_won = self._move_piece(code, player_id, piece_index)
 
         return game.positions[player_id], next_player, just_won, skip
     
-    @raft_command("clear_game")
     def clear_game(self, code: str):
         """Clear the game data."""
         if code in self.games:
             del self.games[code]
-    
-    @raft_command("start_game")
-    def start_game(self, code: str):
-        game = self.games[code]
-        if game.started:
-            raise ValueError("Game has already started.")
-        
-        game.started = True
-
-    @raft_command("set_player_state")
-    def set_player_state(self, code: str, player_id: str, online: bool):
-        game = self.get_game(code)
-
-        pid = next((i for i, p in enumerate(game.players) if p.id == player_id), 0)
-        game.players[pid].is_online = online
 
 game_manager = GameManager()

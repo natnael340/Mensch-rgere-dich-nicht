@@ -52,10 +52,8 @@ async def websocket_game(websocket: WebSocket, code: str, ):
         return
     
     await ws_manager.connect(code, websocket)
-    player.is_online = True
-    pidx = next((i for i, p in enumerate(game.players) if p.id == player.id), 0)
+    game_manager.set_player_state(code, player.id, True)
     
-    game.players[pidx].is_online = True
     await ws_manager.broadcast(code, {"type": "player_joined", "player": player.model_dump()})
 
     try:
@@ -64,7 +62,7 @@ async def websocket_game(websocket: WebSocket, code: str, ):
             action = data.get("action", "")
 
             if action == "start":
-                game.started = True
+                game_manager.start_game(game.code)
                 await ws_manager.broadcast(code, {"type": "game_started", "current_turn": game.players[game.current_turn].model_dump()})
             elif action == "roll":
                 try:
@@ -90,7 +88,7 @@ async def websocket_game(websocket: WebSocket, code: str, ):
 
     except WebSocketDisconnect:
         ws_manager.disconnect(code, websocket)
-        game.players[pidx].is_online = False
+        game_manager.set_player_state(code, player.id, False)
         await ws_manager.broadcast(code, {"type": "player_left", "player": player.model_dump()})
 
     
