@@ -1,16 +1,23 @@
 import asyncio
 import grpc
+import logging
+from typing import TypedDict, Dict, Union
+import redis.asyncio as aioredis
 
 import random
 import time
 from enum import Enum
 from typing import Optional, Dict, List, Any, Tuple
-from app.models import PeerNode, LogEntry, AppendEntriesRPC, RequestVoteRPC
 from tenacity import retry, stop_after_attempt, RetryError
-from app.raft_grpc.raft_pb2 import RequestVoteRPC as PbRV, AppendEntriesRPC as PbAE, LogEntry as PbLogEntry
+from app.raft_grpc.raft_pb2 import RequestVoteRPC as PbRV, AppendEntriesRPC as PbAE, LogEntry as PbLogEntry, RequestVoteReply, AppendEntriesReply
 from app.raft_grpc.raft_pb2_grpc import RaftStub
 
-import httpx
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] [%(name)s] %(message)s",
+)
+logger = logging.getLogger(__name__)
 
 
 class Role(Enum):
@@ -18,149 +25,160 @@ class Role(Enum):
     CANDIDATE = 2
     LEADER = 3
 
+class PeerNode(TypedDict):
+    id: str
+    host: str
+    port: int
+    server: str
+
+class LogEntry(TypedDict):
+    term: int
+    command: Optional[str] = None
+
+class RequestVoteRPC(TypedDict):
+    term: int
+    vote_granted: bool
+
+class AppendEntriesRPC(TypedDict):
+    term: int
+    success: bool
+
 
 class RaftNode:
-    def __init__(self, node_id: str, peers: List[PeerNode], election_timeout: Tuple[float] = (1, 2)):
+    def __init__(
+            self, 
+            node_id: str, 
+            peers: List[PeerNode], 
+            election_timeout: Tuple[float] = (5, 10),
+            heartbeat_interval: float = 0.5,
+            rpc_timeout: float = 2.0
+        ):
+        
         self.node_id: str = node_id
         self.peers: List[PeerNode] = peers
+        self.election_timeout: float = random.uniform(*election_timeout)
+        self.heartbeat_interval: float = heartbeat_interval
+        self.rpc_timeout: float = rpc_timeout
         
-        self.role = Role.FOLLOWER
-        self.current_term: int = 0
-
-        self.voted_for: Optional[int] = None
+        self.role = Role.FOLLOWER   
+        self.state = []
         self.log: List[LogEntry] = []
+        self.current_term: int = 0
+        self.voted_for: Optional[str] = None
         self.commit_index: int = -1
         self.last_applied: int = -1
+        self.next_index: Dict[str, int] = {peer['id']: 0 for peer in peers}
+        self.match_index: Dict[str, int] = {peer['id']: -1 for peer in peers}
 
-        self.next_index: Dict[str, int] = {}
-        self.match_index: Dict[str, int] = {}
-
-        self.state: Dict[str, Any] = {}
-
-        self.client = httpx.AsyncClient(timeout=1.0)
-
-        self.election_timeout = election_timeout
-        self.last_heartbeat = time.time()
+        self.last_heartbeat = asyncio.get_event_loop().time()
+        self.heartbeat_task: Optional[asyncio.Task] = None
+        self.state_lock: asyncio.Lock = asyncio.Lock()
 
         # GRPC
         self.channels = {
-            peer.id: grpc.aio.insecure_channel(f"{peer.host}:{peer.port}")
+            peer['id']: grpc.aio.insecure_channel(f"{peer['host']}:{peer['port']}")
             for peer in peers
         }
         self.stubs = {pid: RaftStub(chan) for pid, chan in self.channels.items()}
 
-    @retry(stop=stop_after_attempt(3))
-    async def send_request_vote(self, peer: PeerNode) -> Dict[str, Any]:
+
+        logger.info(f"Node {self.node_id} initialized with {len(peers)} peers")
+
+    @retry(stop=stop_after_attempt(1))
+    async def send_request_vote(self, peer: PeerNode, log: List) -> Dict[str, Any]:
         """
         Send a RequestVote RPC to a peer.
         """
+        logger.info(f"Node {self.node_id} sending RequestVote to {peer['id']}")
         req = PbRV(
             term=self.current_term,
             candidate_id=self.node_id,
-            last_log_index=len(self.log) - 1,
-            last_log_term=self.log[-1].term if self.log else 0
+            last_log_index=len(log) - 1,
+            last_log_term=log[-1]['term'] if log else 0
         )
-        reply = await self.stubs[peer.id].RequestVote(req, timeout=1.0)
-
+        reply = await self.stubs[peer['id']].RequestVote(req, timeout=3.0)
         return {"term": reply.term, "vote_granted": reply.vote_granted}
         
-        # response = await self.client.post(
-        #     f"http://{peer.host}:{peer.port}/raft/request_vote",
-        #     json={
-        #         "term": self.current_term,
-        #         "candidate_id": self.node_id,
-        #         "last_log_index": len(self.log) - 1,
-        #         "last_log_term": self.log[-1].term if self.log else 0
-        #     }
-        # )
-        # response.raise_for_status()
-
-        # return response.json()
-    @retry(stop=stop_after_attempt(3))
-    async def send_append_entries(self, peer: PeerNode, msg: AppendEntriesRPC) -> bool:
+    @retry(stop=stop_after_attempt(1))
+    async def send_append_entries(self, peer: PeerNode, msg: Dict, node_id: str) -> bool:
         entries = [
-            PbLogEntry(term=e.term, command=list(e.command)) for e in msg.entries
+            PbLogEntry(term=e["term"], command=e["command"]) for e in msg["entries"]
         ]
+        
         req = PbAE(
-            term=msg.term,
-            leader_id=self.node_id,
-            prev_log_index=msg.prev_log_index,
-            prev_log_term=msg.prev_log_term,
+            term=msg["term"],
+            leader_id=node_id,
+            prev_log_index=msg["prev_log_index"],
+            prev_log_term=msg["prev_log_term"],
             entries=entries,
-            leader_commit=msg.leader_commit
+            leader_commit=msg["leader_commit"]
         )
-        reply = await self.stubs[peer.id].AppendEntries(req, timeout=1.0)
-
+        
+        reply = await self.stubs[peer['id']].AppendEntries(req, timeout=self.rpc_timeout)
+        
         return {"term": reply.term, "success": reply.success}
     
     async def handle_request_vote(self, msg: RequestVoteRPC):
         """
         Handle a RequestVote RPC.
         """
-        print(f"[Node {self.node_id}] Handling RequestVote from {msg.candidate_id} for term {msg.term}")
-        print(msg)
-        term = msg.term
-        candidate_id = msg.candidate_id
-        last_log_index = msg.last_log_index
-        last_log_term = msg.last_log_term
+        async with self.state_lock:
+            logger.info(f"Node {self.node_id} [{self.role}] handling RequestVote from {msg.candidate_id} for term {msg.term}")
+            if msg.term < self.current_term:
+                return RequestVoteReply(term=self.current_term, vote_granted=False)
+            
+            if msg.term > self.current_term:
+                self.current_term = msg.term
+                self.role = Role.FOLLOWER
+                self.voted_for = None
+                logger.info(f"Node {self.node_id} updated term to {self.current_term}, became FOLLOWER")
 
-        if term < self.current_term:
-            return {"term": self.current_term, "vote_granted": False}
         
-        if term > self.current_term:
-            self.current_term = term
-            self.role = Role.FOLLOWER
-            self.voted_for = candidate_id
-        
-        our_last_index = len(self.log) - 1
-        our_last_term = self.log[our_last_index].term if our_last_index >= 0 else 0
-        up_to_date = (
-            last_log_term > our_last_term or
-            (last_log_term == our_last_term and last_log_index >= our_last_index)
-        )
+            our_last_index = len(self.log) - 1
+            our_last_term = self.log[our_last_index]['term'] if our_last_index >= 0 else 0
+            up_to_date = (
+                msg.last_log_term > our_last_term or
+                (msg.last_log_term == our_last_term and msg.last_log_index >= our_last_index)
+            )
 
-        vote_granted = False
-        if (self.voted_for is None or self.voted_for == candidate_id) and up_to_date:
-            self.voted_for = candidate_id
-            vote_granted = True
+            vote_granted = False
+            if (self.voted_for is None or self.voted_for == msg.candidate_id) and up_to_date:
+                self.voted_for = msg.candidate_id
+                vote_granted = True
+                logger.info(f"Node {self.node_id} granted vote to {msg.candidate_id}")
         
-        return {"term": self.current_term, "vote_granted": vote_granted}
+            return RequestVoteReply(term=self.current_term, vote_granted=vote_granted)
         
 
-    async def handle_append_entries(self, msg: AppendEntriesRPC) -> Dict[str, Any]:
+    async def handle_append_entries(self, msg: PbAE) -> Dict[str, Any]:
         """
         Handle incoming AppendEntries RPC; replication and heartbeat.
-        """
+        """ 
+        print(f"Node {self.node_id} handling AppendEntries from {msg}")
+        async with self.state_lock:
+            #logger.info(f"Node {self.node_id} [{self.role}] handling AppendEntries from {msg.leader_id}, term {msg.term}")
+            if msg.term < self.current_term:
+                return AppendEntriesReply(term=self.current_term, success=False)
+            
+            self.current_term = msg.term
+            self.role = Role.FOLLOWER
+            self.last_heartbeat = asyncio.get_event_loop().time()
+            self.voted_for = None
 
-        term = msg.term
-        prev_index = msg.prev_log_index
-        prev_term = msg.prev_log_term
-        entries_data = msg.entries
-        leader_commit = msg.leader_commit
-        
-        # Reject if term is stale
-        if term < self.current_term:
-            return {"term": self.current_term, "success": False}
+            if msg.prev_log_index >= 0:
+                if msg.prev_log_index >= len(self.log) or self.log[msg.prev_log_index]["term"] != msg.prev_log_term:
+                    logger.info(f"Node {self.node_id} rejected AppendEntries: prev_log_index {msg.prev_log_index} mismatch")
+                    return AppendEntriesReply(term=self.current_term, success=False)
+            
+            new_entries = [{"term": e.term, "command": e.command} for e in msg.entries]
+            self.log = self.log[:msg.prev_log_index + 1] + new_entries
+            if msg.leader_commit > self.commit_index:
+                self.commit_index = min(msg.leader_commit, len(self.log) - 1)
+                await self.apply_entries()
+            
+            logger.info(f"Node {self.node_id} accepted AppendEntries, new log length: {len(self.log)}")
 
-        # Accept new leader
-        self.current_term = term
-        self.role = Role.FOLLOWER
-        self.last_heartbeat = time.time()
-
-        # Consistency check
-        if prev_index >= 0:
-            if prev_index >= len(self.log) or self.log[prev_index].term != prev_term:
-                return {"term": self.current_term, "success": False}
-       
-        # Append new entries (overwrite conflicts)
-        new_entries = [LogEntry(e["term"], e["command"]) for e in entries_data]
-        self.log = self.log[: prev_index + 1] + new_entries
-
-        # Update commit index
-        if leader_commit > self.commit_index:
-            self.commit_index = min(leader_commit, len(self.log) - 1)
-
-        return {"term": self.current_term, "success": True}
+            return AppendEntriesReply(term=self.current_term, success=True)
 
     # --------------------------------------------------------------------------
     # Leader election
@@ -170,33 +188,39 @@ class RaftNode:
         """
         Transition to candidate and solicit votes from peers.
         """
-        self.role = Role.CANDIDATE
-        self.current_term += 1
-        self.voted_for = self.node_id
-        votes = 1  # vote for self
+        async with self.state_lock:
+            if self.role == Role.LEADER:
+                return
+            
+            self.role = Role.CANDIDATE
+            self.current_term += 1
+            self.voted_for = self.node_id
+            
+            logger.info(f"Node {self.node_id} started election for term {self.current_term}")
 
+        votes = 1  # vote for self
         for peer in self.peers:
             try:
-                reply = await self.send_request_vote(peer)
+                reply = await self.send_request_vote(peer, self.log)
                 if reply.get("vote_granted"):
                     votes += 1
             except RetryError as e:
-                last_attempt = e.last_attempt.exception()
-                if isinstance(last_attempt, grpc.aio.AioRpcError):
-                    if last_attempt.code() == grpc.StatusCode.UNAVAILABLE:
-                        votes += 1
-                else:
-                    continue
+                logger.info(f"Node {self.node_id} failed to get vote from {peer['id']}: {e}")
+                continue
             
-        print(f"[Node {self.node_id}] Election: {votes} votes received in term {self.current_term}")
-        # Become leader on majority
-        if votes > len(self.peers) // 2:
-            self.role = Role.LEADER
-            N = len(self.log)
-            for p in self.peers:
-                self.next_index[p.id] = N
-                self.match_index[p.id] = -1
-            asyncio.create_task(self.send_heartbeats())
+        async with self.state_lock:
+            # Become leader on majority
+            if votes > len(self.peers) // 2:
+                self.role = Role.LEADER
+                logger.info(f"Node {self.node_id} became LEADER with {votes} votes in term {self.current_term}")
+                for p in self.peers:
+                    self.next_index[p['id']] = len(self.log)
+                    self.match_index[p['id']] = -1
+                if self.heartbeat_task:
+                    self.heartbeat_task.cancel()
+                self.heartbeat_task = asyncio.create_task(self.send_heartbeats())
+            else:
+                logger.info(f"Node {self.node_id} failed election with {votes} votes")
 
     # --------------------------------------------------------------------------
     # Heartbeats & log replication
@@ -206,64 +230,59 @@ class RaftNode:
         """
         Leader continuously sends AppendEntries (even empty) to maintain authority.
         """
+        
         while self.role == Role.LEADER:
-            for peer in self.peers:
-                prev_idx = self.next_index[peer.id] - 1
-                prev_term = self.log[prev_idx].term if prev_idx >= 0 else 0
-                
-                entries = [
-                    {"term": e.term, "command": list(e.command)}
-                    for e in self.log[self.next_index[peer.id]:]
-                ]
-                try:
-                    msg = AppendEntriesRPC(
-                        term=self.current_term,
-                        leader_id=self.node_id,
-                        prev_log_index=prev_idx,
-                        prev_log_term=prev_term,
-                        entries=entries,
-                        leader_commit=self.commit_index
-                    )
-                    reply = await self.send_append_entries(peer, msg)
-                except RetryError as e:
-                    continue
+            command = None
+            try:
+                command = self.my_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                pass
+            
+            async with self.state_lock: 
+                if command:
+                    print(f"Node {self.node_id} appending command to log: {command}")
+                    self.log.append({"term": self.current_term, "command": command})
+                    command = None     
+            
+                for peer in self.peers:
+                    prev_idx = self.next_index[peer['id']] - 1
+                    prev_term = self.log[prev_idx]['term'] if prev_idx >= 0 else 0
+                    entries = self.log[self.next_index[peer['id']]:]
+                    msg = {
+                        "term": self.current_term,
+                        "leader_id": self.node_id,
+                        "prev_log_index": prev_idx,
+                        "prev_log_term": prev_term,
+                        "entries": entries,
+                        "leader_commit": self.commit_index
+                    }
+                    
+                    try:
+                        reply = await self.send_append_entries(peer, msg, self.node_id)
+                      
+                        if reply.get("term") > self.current_term:
+                            self.current_term = reply["term"]
+                            self.role = Role.FOLLOWER
+                            self.voted_for = None
+                            logger.info(f"Node {self.node_id} stepped down to FOLLOWER due to higher term {reply['term']}")
+                            return
+                        
+                        if reply.get("success"):
+                            if entries:
+                                self.match_index[peer['id']] = prev_idx + len(entries)
+                                self.next_index[peer['id']] = self.match_index[peer['id']] + 1
+                                logger.info(f"Node {self.node_id} replicated to {peer['id']}, match_index: {self.match_index[peer['id']]}")
+                        else:
+                            self.next_index[peer['id']] = max(0, self.next_index[peer['id']] - 1)
+                            logger.info(f"Node {self.node_id} reduced next_index for {peer['id']} to {self.next_index[peer['id']]}")
+                        
+                    except RetryError as e:
+                        err = e.last_attempt.exception()
+                        logger.info(f"Node {self.node_id} failed to send AppendEntries to {peer['id']}: {err}")
+                        continue
+                                        
+            await asyncio.sleep(self.heartbeat_interval)    
 
-                if reply.get("success"):
-                    self.match_index[peer.id] = self.next_index[peer.id] + len(entries) - 1
-                    self.next_index[peer.id] = self.match_index[peer.id] + 1
-                else:
-                    self.next_index[peer.id] = max(0, self.next_index[peer.id] - 1)
-
-            await asyncio.sleep(0.5)    
-
-    # --------------------------------------------------------------------------
-    # Client API: submit command and await commitment
-    # --------------------------------------------------------------------------
-
-    async def client_command(self, command: Tuple[str, Any]) -> None:
-        """
-        Append a command to the log on the leader and wait for majority commit.
-        Raises Exception if not leader.
-        """
-        if self.role != Role.LEADER:
-            raise Exception("Not the leader")
-
-        entry = LogEntry(self.current_term, command)
-        self.log.append(entry)
-
-        # Wait for a majority to replicate
-        while True:
-            count = 1  # self
-            for pid, idx in self.match_index.items():
-                if idx >= len(self.log) - 1:
-                    count += 1
-            if count > len(self.peers) // 2:
-                self.commit_index = len(self.log) - 1
-                break
-            await asyncio.sleep(0.05)
-
-        # Apply committed entries to state machine
-        await self.apply_entries()
 
     # --------------------------------------------------------------------------
     # Apply committed entries
@@ -273,16 +292,59 @@ class RaftNode:
         """
         Apply all newly committed log entries to the in-memory state dict.
         """
-        while self.last_applied < self.commit_index:
-            self.last_applied += 1
-            entry = self.log[self.last_applied]
-            game_id, move = entry.command
-            self.state.setdefault(game_id, []).append(move)
-            print(f"[Node {self.node_id}] Applied move to {game_id}: {move}")
+        async with self.state_lock:
+            while self.last_applied < self.commit_index:
+                self.last_applied += 1
+                #entry = self.log[self.last_applied]
+                print("entry.command")
 
     # --------------------------------------------------------------------------
     # Main loop: handle timeouts and incoming HTTP RPCs
     # --------------------------------------------------------------------------
+
+    async def election_loop(self, queue: asyncio.Queue) -> None:
+        self.my_queue = queue
+        try:
+            while True:
+                # Check for election timeout
+                current_time = asyncio.get_event_loop().time()
+                should_start_election = False
+                async with self.state_lock:
+                    if (
+                        self.role != Role.LEADER
+                        and current_time - self.last_heartbeat
+                        > self.election_timeout
+                    ):
+                        logger.info(f"Node {self.node_id} election timeout({current_time - self.last_heartbeat}, {self.election_timeout}), starting election")
+                        should_start_election = True
+
+                if should_start_election:
+                    await self.start_election()
+                await asyncio.sleep(self.election_timeout / 2) 
+        except asyncio.CancelledError:
+            logger.info(f"Node {self.node_id} run loop cancelled")
+            await self.shutdown()
+            raise
+
+    async def subscribe_loop(self, queue: asyncio.Queue) -> None:
+        assert self.redis is not None, "Redis connection not initialized"
+        
+        pubsub = self.redis.pubsub()
+        await pubsub.subscribe("raft:commands")
+
+        async for message in pubsub.listen():
+            if message["type"] != "message":
+                continue
+
+            command = message["data"]
+            logger.info(f"[{self.node_id}] [_subscribe_to_redis_loop] got: {command!r}")
+
+            try:
+                await queue.put(command)
+            except Exception as exc:
+                # Possibly we stepped down; drop the command
+                logger.info(f"[{self.node_id}] append_log_entry error: {exc}")
+
 
     async def run(self) -> None:
         """
@@ -293,30 +355,47 @@ class RaftNode:
         # handle_request_vote and handle_append_entries directly.
         
         # Election & heartbeat monitoring
-        while True:
-            # Check for election timeout
-            if (
-                self.role != Role.LEADER
-                and time.time() - self.last_heartbeat
-                > random.uniform(*self.election_timeout)
-            ):
-                await self.start_election()
-            await asyncio.sleep(0.5)
+        self.redis = await aioredis.from_url(
+            f"redis://127.0.0.1:6379",
+            encoding="utf-8",
+            decode_responses=True,
+        )
+        queue: asyncio.Queue = asyncio.Queue()
+
+        await asyncio.gather(
+            self.election_loop(queue),
+            self.subscribe_loop(queue),
+        )
+
+        
+        
+
+    async def shutdown(self) -> None:
+        """Clean up resources, clos ing gRPC channels."""
+        logger.info(f"Node {self.node_id} shutting down")
+        if self.heartbeat_task:
+            self.heartbeat_task.cancel()
+        for channel in self.channels.values():
+            await channel.close()
+        logger.info(f"Node {self.node_id} shutdown complete")
 
     async def append_log_entry(self, command) -> None:
-        if self.role != Role.LEADER:
-            raise Exception("Not the leader")
-        
-        entry = LogEntry(self.current_term, command)
-        self.log.append(entry)
-        new_index = len(self.log) - 1
+        async with self.state_lock:
+            if self.role != Role.LEADER:
+                raise Exception("Not the leader")
 
-        for peer in self.peers:
-            asyncio.create_task(self._replicate_to_peer(peer))
+            entry = LogEntry(term=self.current_term, command=command)
+            #self.log.append({"term": self.current_term, "command": command})
+            #new_index = len(self.log) - 1
 
         total = len(self.peers) + 1
         needed = total // 2 + 1
-
+        
+        return
+        for peer in self.peers:
+            asyncio.create_task(self._replicate_to_peer(peer))
+        
+        tries = 0
         while True:
             count = 1  # count self
             for idx in self.match_index.values():
@@ -324,17 +403,21 @@ class RaftNode:
                     count += 1
             if count >= needed:
                 break
-            await asyncio.sleep(0.05)
+            tries += 1
+            if tries > 3:
+                raise ValueError("Failed to replicate log entry after multiple attempts")
+                
+            await asyncio.sleep(0.5)
 
         self.commit_index = new_index
         await self.apply_entries()
 
     async def _replicate_to_peer(self, peer: PeerNode) -> None:
-        prev_idx  = self.next_index[peer.id] - 1
-        prev_term = self.log[prev_idx].term if prev_idx >= 0 else 0
+        prev_idx  = self.next_index[peer['id']] - 1
+        prev_term = self.log[prev_idx]["term"] if prev_idx >= 0 else 0
         entries = [
-            {"term": e.term, "command": list(e.command)}
-            for e in self.log[self.next_index[peer.id]:]
+            {"term": e["term"], "command": e["command"]}
+            for e in self.log[self.next_index[peer['id']]:]
         ]
         rpc = AppendEntriesRPC(
             term=self.current_term,
@@ -350,13 +433,13 @@ class RaftNode:
             return
         
         if reply.get("success"):
-            prev_idx  = self.next_index[peer.id] - 1
+            prev_idx  = self.next_index[peer['id']] - 1
             sent_count = len(self.log) - (prev_idx + 1)
             new_match = prev_idx + sent_count
-            self.match_index[peer.id] = new_match
-            self.next_index[peer.id]  = new_match + 1
+            self.match_index[peer['id']] = new_match
+            self.next_index[peer['id']]  = new_match + 1
         else:
-            self.next_index[peer.id] = max(0, self.next_index[peer.id] - 1)
+            self.next_index[peer['id']] = max(0, self.next_index[peer['id']] - 1)
 
 
 

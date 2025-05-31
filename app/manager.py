@@ -4,7 +4,7 @@ import random
 import string
 from app.models import Game, Player
 from app.constants import MAXIMUM_ALLOWED_PLAYERS
-from app.utils.util import raft_command
+from app.raft import raft_command
 
 NAMESPACE = uuid.UUID("4372ffc4-1acd-4df8-803f-361787fb5e06") # UUID for the namespace
 START_OFFSET = {} 
@@ -19,21 +19,21 @@ class GameManager:
         return ''.join(random.choices(string.ascii_uppercase, k=length))
     
     @raft_command("create_game")
-    def _create_game(self, code: str) -> Game:
+    async def _create_game(self, redis, code: str) -> Game:
         game = Game(code=code)
         self.games[code] = game
 
         return game 
     
-    def create_game(self) -> Game:
+    async def create_game(self, redis) -> Game:
         code = self.generate_game_code()
         while code in self.games:
             code = self.generate_game_code()
         
-        return self._create_game(code)
+        return await self._create_game(redis, code)
     
     @raft_command("join_game")
-    def _join_game(self, code: str, player: Dict) -> None:
+    async def _join_game(self, code: str, player: Dict) -> None:
         game = self.games[code]
 
         game.players.append(Player(**player))
@@ -42,7 +42,7 @@ class GameManager:
         for idx, p in enumerate(game.players):
             game.start_offset[p.id] = idx * 10
     
-    def join_game(self, code: str, player: Player):
+    async def join_game(self, code: str, player: Player):
         """Join an existing game."""
         if code not in self.games:
             raise ValueError("Game not found.")
@@ -56,7 +56,7 @@ class GameManager:
         if game.started:
             raise ValueError("Game has already started.")
         
-        self._join_game(code, player.model_dump())
+        await self._join_game(code, player.model_dump())
 
         return game
     
@@ -67,21 +67,21 @@ class GameManager:
                 return game
         return None
     
-    def join_or_create_game(self, name: str, code: Optional[str] = None):
+    async def join_or_create_game(self, name: str, code: Optional[str] = None):
         """Join an existing game or create a new one."""
         player_id = self.name_to_uuid(name)
         player = Player(id=player_id, name=name)
 
         if code:
-            return self.join_game(code, player), player
+            return await self.join_game(code, player), player
         
         game = self.find_available_game()
         if game:
-            return self.join_game(game.code, player), player
+            return await self.join_game(game.code, player), player
         
         # Add player to the game
-        game = self.create_game()
-        self._join_game(game.code, player.model_dump())
+        game = await self.create_game()
+        await self._join_game(game.code, player.model_dump())
 
         return game, player
     
@@ -106,14 +106,14 @@ class GameManager:
         return movable_tokens
     
     @raft_command("roll_dice")
-    def _roll_dice(self, code: str, pending_roll: Optional[int], current_turn: int):
+    async def _roll_dice(self, code: str, pending_roll: Optional[int], current_turn: int):
         """Internal method to set the pending roll and current turn."""
         game = self.games[code]
 
         game.pending_roll = pending_roll
         game.current_turn = current_turn
     
-    def roll_dice(self, code: str, player_id: str):
+    async def roll_dice(self, code: str, player_id: str):
         """Roll the dice for a player."""
         game = self.get_game(code)
 
@@ -134,7 +134,7 @@ class GameManager:
             _current_turn = self.get_next_turn(game)
             next_turn = game.players[_current_turn]
         
-        self._roll_dice(code, _pending_roll, _current_turn)
+        await self._roll_dice(code, _pending_roll, _current_turn)
     
         return roll, next_turn
     
@@ -184,7 +184,7 @@ class GameManager:
         return iplayer
     
     @raft_command("move_piece")
-    def _move_piece(self, code: str, player_id: str, piece_index: int, new_position: int) -> Tuple[Optional[Player], bool]:
+    async def _move_piece(self, code: str, player_id: str, piece_index: int, new_position: int) -> Tuple[Optional[Player], bool]:
         game = self.games[code]
 
         game.positions[player_id][piece_index] = new_position
@@ -199,7 +199,7 @@ class GameManager:
         
         return next_player, just_won
 
-    def move_piece(self, code: str, player_id: str, piece_index: int) -> Tuple[int, Optional[Player], bool]:
+    async def move_piece(self, code: str, player_id: str, piece_index: int) -> Tuple[int, Optional[Player], bool]:
         """Move a piece for a player."""
         game = self.get_game(code)
 
@@ -223,26 +223,30 @@ class GameManager:
                             skip = True
                             game.positions[pid][i] = -1
                 
-        next_player, just_won = self._move_piece(code, player_id, piece_index, new_position)
+        next_player, just_won = await self._move_piece(code, player_id, piece_index, new_position)
 
         return game.positions[player_id], next_player, just_won, skip
     
-    @raft_command("clear_game")
-    def clear_game(self, code: str):
-        """Clear the game data."""
-        if code in self.games:
-            del self.games[code]
     
+    @raft_command("clear_game")
+    async def clear_game(self, code: str):
+        """Clear the game data."""
+        self.get_game(code)
+        
+        del self.games[code]
+        
     @raft_command("start_game")
-    def start_game(self, code: str):
+    async def start_game(self, code: str):
         game = self.games[code]
         if game.started:
             raise ValueError("Game has already started.")
         
         game.started = True
+    
+        
 
     @raft_command("set_player_state")
-    def set_player_state(self, code: str, player_id: str, online: bool):
+    async def set_player_state(self, code: str, player_id: str, online: bool):
         game = self.get_game(code)
 
         pid = next((i for i, p in enumerate(game.players) if p.id == player_id), 0)

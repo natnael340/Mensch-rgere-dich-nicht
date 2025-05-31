@@ -12,14 +12,3 @@ def load_yaml(file_path):
     with open(file_path, 'r', encoding='utf-8') as file:
         return yaml.safe_load(file)
     
-
-def raft_command(command: str):
-    def decorator(func):
-        #@functools.wraps(func)
-        def wrapper(*args, **kwargs):
-                
-            print(f"Executing command: {command} with code: ")
-            print(json.dumps(args[1:]))
-            return func(*args, **kwargs)
-        return wrapper
-    return decorator
