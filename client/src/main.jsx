@@ -15,7 +15,7 @@ const gameLoader = async ({ params }) => {
     return redirect("/");
   }
 
-  const response = await fetch(`http://localhost:8080/game/${code}`, {
+  const response = await fetch(`http://game.local:8080/game/${code}`, {
     method: "GET",
     headers: {
       Authorization: `Bearer ${token}`,

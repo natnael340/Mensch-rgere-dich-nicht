@@ -66,11 +66,13 @@ def raft_command(command: str):
             print(f"Executing command: {command} with code: ")
             print(json.dumps(args[2:]))
             print("Syncing with Raft cluster...")
-            redis = args[1]
-            try:
-                await redis.publish("raft:commands", json.dumps({"command": command, "args": args[2:]}))
-            except Exception as e:
-                print(f"Error publishing to Redis: {e}")
+            # redis = args[1]
+            # try:
+            #     await redis.publish("raft:commands", json.dumps({"command": command, "args": args[2:]}))
+            # except Exception as e:
+            #     print(f"Error publishing to Redis: {e}")
+            entry = json.dumps({"command": command, "args": args[1:]})
+            await raft_node.append_log_entry(entry)
                         
             # Here we would typically wait for the Raft consensus to be reached
             print("Command synced with Raft cluster.")

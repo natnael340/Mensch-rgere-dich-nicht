@@ -62,7 +62,7 @@ export function useGame(
 
   useEffect(() => {
     // Open WebSocket with sub-protocol=token
-    const ws = new WebSocket(`ws://localhost:8080/ws/game/${code}`, token);
+    const ws = new WebSocket(`ws://game.local:8080/ws/game/${code}`, token);
     wsRef.current = ws;
 
     ws.onopen = () => {

@@ -17,7 +17,7 @@ function App() {
   const createGame = async () => {
     setLoading(true);
     localStorage.setItem("name", name);
-    let response = await fetch("http://localhost:8080/game", {
+    let response = await fetch("http://game.local:8080/game", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
     });
@@ -27,7 +27,7 @@ function App() {
       return;
     }
     const { code } = await response.json();
-    response = await fetch(`http://localhost:8080/game/join/`, {
+    response = await fetch(`http://game.local:8080/game/join`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name, code }),

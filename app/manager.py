@@ -1,3 +1,5 @@
+import json
+
 from typing import Optional, Tuple, List, Dict
 import uuid
 import random
@@ -17,20 +19,65 @@ class GameManager:
     def generate_game_code(self, length=6):
         """Generate a unique game code."""
         return ''.join(random.choices(string.ascii_uppercase, k=length))
+        
+    def apply_command(self, cmd):
+        """Apply commands to the game manager."""
+        cmd = json.loads(cmd)
+        print(f"Applying command: {cmd['command']} with args: {cmd['args']}")
+        if cmd["command"] == "create_game":
+            self.games[cmd['args'][0]] = Game(code=cmd['args'][0])
+        elif cmd["command"] == "join_game":
+            game = self.games[cmd['args'][0]]
+            player = Player(**cmd['args'][1])
+            game.players.append(player)
+            game.init_positions()
+
+            for idx, p in enumerate(game.players):
+                game.start_offset[p.id] = idx * 10
+
+        elif cmd["command"] == "roll_dice":
+            game = self.games[cmd['args'][0]]
+
+            game.pending_roll = cmd['args'][1]
+            game.current_turn = cmd['args'][2]
+
+        elif cmd["command"] == "move_piece":
+            code, player_id, piece_index, new_position = cmd['args']
+            game = self.games[code]
+
+            game.positions[player_id][piece_index] = new_position
+            game.pending_roll = None
+
+            just_won = all(pos >= 40 for pos in game.positions[player_id])
+            if not just_won:
+                game.current_turn = self.get_next_turn(game)
+        
+        elif cmd["command"] == "clear_game":
+            code = cmd['args'][0]
+            if code in self.games:
+                del self.games[code]
+        elif cmd["command"] == "start_game":
+            self.games[cmd['args'][0]].started = True
+        elif cmd["command"] == "set_player_state":
+            code, player_id, online = cmd['args']
+            game = self.games[code]
+
+            pid = next((i for i, p in enumerate(game.players) if p.id == player_id), 0)
+            game.players[pid].is_online = online
     
     @raft_command("create_game")
-    async def _create_game(self, redis, code: str) -> Game:
+    async def _create_game(self, code: str) -> Game:
         game = Game(code=code)
         self.games[code] = game
 
         return game 
     
-    async def create_game(self, redis) -> Game:
+    async def create_game(self) -> Game:
         code = self.generate_game_code()
         while code in self.games:
             code = self.generate_game_code()
         
-        return await self._create_game(redis, code)
+        return await self._create_game(code)
     
     @raft_command("join_game")
     async def _join_game(self, code: str, player: Dict) -> None:

@@ -13,7 +13,7 @@ function Lobby() {
     const playerId = localStorage.getItem(`player_id-${code}`);
     setIsHost(players[0].id == playerId);
 
-    const ws = new WebSocket(`ws://localhost:8080/ws/game/${code}`, token);
+    const ws = new WebSocket(`ws://game.local:8080/ws/game/${code}`, token);
     gameWs.current = ws;
     ws.onmessage = (e) => {
       const msg = JSON.parse(e.data);

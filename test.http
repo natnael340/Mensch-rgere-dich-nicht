@@ -24,7 +24,7 @@ Content-Type: application/json
 
 ###
 # see game state
-GET http://127.0.0.1:8000/game/LPHQPI
+GET http://127.0.0.1:8081/game/JBQRYJ
 
 ###
 # see raft

@@ -59,6 +59,7 @@ class RaftNode:
         self.election_timeout: float = random.uniform(*election_timeout)
         self.heartbeat_interval: float = heartbeat_interval
         self.rpc_timeout: float = rpc_timeout
+        self.leader_id: Optional[str] = None
         
         self.role = Role.FOLLOWER   
         self.state = []
@@ -83,6 +84,9 @@ class RaftNode:
 
 
         logger.info(f"Node {self.node_id} initialized with {len(peers)} peers")
+
+    def is_leader(self) -> bool:
+        return self.role == Role.LEADER
 
     @retry(stop=stop_after_attempt(1))
     async def send_request_vote(self, peer: PeerNode, log: List) -> Dict[str, Any]:
@@ -154,13 +158,14 @@ class RaftNode:
         """
         Handle incoming AppendEntries RPC; replication and heartbeat.
         """ 
-        print(f"Node {self.node_id} handling AppendEntries from {msg}")
+        #print(f"Node {self.node_id} handling AppendEntries from {msg}")
         async with self.state_lock:
             #logger.info(f"Node {self.node_id} [{self.role}] handling AppendEntries from {msg.leader_id}, term {msg.term}")
             if msg.term < self.current_term:
                 return AppendEntriesReply(term=self.current_term, success=False)
             
             self.current_term = msg.term
+            self.leader_id = msg.leader_id
             self.role = Role.FOLLOWER
             self.last_heartbeat = asyncio.get_event_loop().time()
             self.voted_for = None
@@ -176,7 +181,7 @@ class RaftNode:
                 self.commit_index = min(msg.leader_commit, len(self.log) - 1)
                 await self.apply_entries()
             
-            logger.info(f"Node {self.node_id} accepted AppendEntries, new log length: {len(self.log)}")
+            #logger.info(f"Node {self.node_id} accepted AppendEntries, new log length: {len(self.log)}")
 
             return AppendEntriesReply(term=self.current_term, success=True)
 
@@ -226,24 +231,15 @@ class RaftNode:
     # Heartbeats & log replication
     # --------------------------------------------------------------------------
 
+
     async def send_heartbeats(self) -> None:
         """
         Leader continuously sends AppendEntries (even empty) to maintain authority.
         """
         
         while self.role == Role.LEADER:
-            command = None
-            try:
-                command = self.my_queue.get_nowait()
-            except asyncio.QueueEmpty:
-                pass
             
             async with self.state_lock: 
-                if command:
-                    print(f"Node {self.node_id} appending command to log: {command}")
-                    self.log.append({"term": self.current_term, "command": command})
-                    command = None     
-            
                 for peer in self.peers:
                     prev_idx = self.next_index[peer['id']] - 1
                     prev_term = self.log[prev_idx]['term'] if prev_idx >= 0 else 0
@@ -277,8 +273,7 @@ class RaftNode:
                             logger.info(f"Node {self.node_id} reduced next_index for {peer['id']} to {self.next_index[peer['id']]}")
                         
                     except RetryError as e:
-                        err = e.last_attempt.exception()
-                        logger.info(f"Node {self.node_id} failed to send AppendEntries to {peer['id']}: {err}")
+                            
                         continue
                                         
             await asyncio.sleep(self.heartbeat_interval)    
@@ -292,11 +287,12 @@ class RaftNode:
         """
         Apply all newly committed log entries to the in-memory state dict.
         """
-        async with self.state_lock:
-            while self.last_applied < self.commit_index:
-                self.last_applied += 1
-                #entry = self.log[self.last_applied]
-                print("entry.command")
+        from app.manager import game_manager # game state
+        print("Applying committed entries")
+        while self.last_applied < self.commit_index:
+            self.last_applied += 1
+            entry = self.log[self.last_applied]
+            game_manager.apply_command(entry["command"])
 
     # --------------------------------------------------------------------------
     # Main loop: handle timeouts and incoming HTTP RPCs
@@ -355,21 +351,61 @@ class RaftNode:
         # handle_request_vote and handle_append_entries directly.
         
         # Election & heartbeat monitoring
-        self.redis = await aioredis.from_url(
-            f"redis://127.0.0.1:6379",
-            encoding="utf-8",
-            decode_responses=True,
-        )
-        queue: asyncio.Queue = asyncio.Queue()
+        self.my_queue = asyncio.Queue()
+        try:
+            while True:
+                # Check for election timeout
+                current_time = asyncio.get_event_loop().time()
+                should_start_election = False
+                async with self.state_lock:
+                    if (
+                        self.role != Role.LEADER
+                        and current_time - self.last_heartbeat
+                        > self.election_timeout
+                    ):
+                        logger.info(f"Node {self.node_id} election timeout({current_time - self.last_heartbeat}, {self.election_timeout}), starting election")
+                        should_start_election = True
 
-        await asyncio.gather(
-            self.election_loop(queue),
-            self.subscribe_loop(queue),
-        )
+                if should_start_election:
+                    await self.start_election()
+                await asyncio.sleep(self.election_timeout / 2) 
+        except asyncio.CancelledError:
+            logger.info(f"Node {self.node_id} run loop cancelled")
+            await self.shutdown()
+            raise
+
+
+    async def append_log_entry(self, command) -> None:
+        async with self.state_lock:
+            if self.role != Role.LEADER:
+                raise Exception("Not the leader")
+
+            self.log.append({"term": self.current_term, "command": command})
+
+            new_index = len(self.log) - 1
+            self.last_applied = new_index
+        
+        total = len(self.peers) + 1  # +1 for self
+        majority = total // 2 + 1
+        while True:
+            async with self.state_lock:
+                count = 1
+                for idx in self.match_index.values():
+                    if idx >= new_index:
+                        count += 1
+                if count >= majority:
+                    self.commit_index = new_index
+                    logger.info(f"Node {self.node_id} committed log entry at index {new_index}")
+                    break
+                logger.info(f"Node {self.node_id} waiting for majority to commit log entry at index {new_index}, current count: {count}")
+            await asyncio.sleep(0.5)
 
         
+                
         
 
+       
+        
     async def shutdown(self) -> None:
         """Clean up resources, clos ing gRPC channels."""
         logger.info(f"Node {self.node_id} shutting down")
@@ -378,68 +414,6 @@ class RaftNode:
         for channel in self.channels.values():
             await channel.close()
         logger.info(f"Node {self.node_id} shutdown complete")
-
-    async def append_log_entry(self, command) -> None:
-        async with self.state_lock:
-            if self.role != Role.LEADER:
-                raise Exception("Not the leader")
-
-            entry = LogEntry(term=self.current_term, command=command)
-            #self.log.append({"term": self.current_term, "command": command})
-            #new_index = len(self.log) - 1
-
-        total = len(self.peers) + 1
-        needed = total // 2 + 1
-        
-        return
-        for peer in self.peers:
-            asyncio.create_task(self._replicate_to_peer(peer))
-        
-        tries = 0
-        while True:
-            count = 1  # count self
-            for idx in self.match_index.values():
-                if idx >= new_index:
-                    count += 1
-            if count >= needed:
-                break
-            tries += 1
-            if tries > 3:
-                raise ValueError("Failed to replicate log entry after multiple attempts")
-                
-            await asyncio.sleep(0.5)
-
-        self.commit_index = new_index
-        await self.apply_entries()
-
-    async def _replicate_to_peer(self, peer: PeerNode) -> None:
-        prev_idx  = self.next_index[peer['id']] - 1
-        prev_term = self.log[prev_idx]["term"] if prev_idx >= 0 else 0
-        entries = [
-            {"term": e["term"], "command": e["command"]}
-            for e in self.log[self.next_index[peer['id']]:]
-        ]
-        rpc = AppendEntriesRPC(
-            term=self.current_term,
-            leader_id=self.node_id,
-            prev_log_index=prev_idx,
-            prev_log_term=prev_term,
-            entries=entries,
-            leader_commit=self.commit_index,
-        )
-        try:
-            reply = await self.send_append_entries(peer, rpc)
-        except RetryError:
-            return
-        
-        if reply.get("success"):
-            prev_idx  = self.next_index[peer['id']] - 1
-            sent_count = len(self.log) - (prev_idx + 1)
-            new_match = prev_idx + sent_count
-            self.match_index[peer['id']] = new_match
-            self.next_index[peer['id']]  = new_match + 1
-        else:
-            self.next_index[peer['id']] = max(0, self.next_index[peer['id']] - 1)
 
 
 
