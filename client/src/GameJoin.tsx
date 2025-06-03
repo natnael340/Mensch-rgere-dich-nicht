@@ -15,7 +15,7 @@ function GameJoin() {
     if (code) {
       data["code"] = code;
     }
-    const res = await fetch("http://localhost:8080/game/join", {
+    const res = await fetch(`${import.meta.env.VITE_APP_API_URL}/game/join`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(data),

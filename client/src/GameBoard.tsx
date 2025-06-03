@@ -1,16 +1,10 @@
-import React, { useEffect, useMemo } from "react";
+import React, { useMemo } from "react";
 import "./App.css";
 import Users from "./components/Users";
 import { useLoaderData } from "react-router";
-import { layout, LayoutCell } from "./components/GameLayout";
-import Circle from "./components/Circle";
-import GameSP from "./components/GameSP";
-import Dice from "./components/Dice";
 import Board from "./components/Board";
 import { useGame } from "./hooks/useGame";
 import toast, { Toaster } from "react-hot-toast";
-
-const SOCKET_URL = "ws://localhost:8000/ws";
 
 const COLOR_ORDER = ["blue", "yellow", "green", "red"] as const;
 

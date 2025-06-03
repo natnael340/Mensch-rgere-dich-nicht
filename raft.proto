@@ -20,11 +20,12 @@ message RequestVoteRPC {
 message RequestVoteReply {
     int32 term = 1;
     bool vote_granted = 2;
+    bool leader_active = 3; // Indicates if the leader is still active
 }
 
 message LogEntry {
     int32 term = 1;
-    repeated string command = 2; // Command to be executed
+    string command = 2; // Command to be executed
 }
 
 message AppendEntriesRPC {
