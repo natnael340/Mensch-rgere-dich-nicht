@@ -1,7 +1,3 @@
-import os
-import threading
-import redis.asyncio as aioredis
-
 from fastapi import FastAPI, Request, HTTPException, Depends
 from fastapi.responses import RedirectResponse
 import asyncio
@@ -33,14 +29,18 @@ def start_raft_thread():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    redis = await aioredis.from_url(
-        f"redis://127.0.0.1:6379",
-        encoding="utf-8",
-        decode_responses=True,
-    )
-    app.state.redis = redis
+    global raft_node
+    
+    raft_node = startup_event()
+    set_raft_node(raft_node)
 
-    threading.Thread(target=start_raft_thread, daemon=True).start()
+    asyncio.create_task(grpc_server())
+    asyncio.create_task(raft_node.run())
+
+
+    # threading.Thread(target=start_raft_thread, daemon=True).start()
+
+    #start_raft_thread()
 
 
 
@@ -71,7 +71,7 @@ async def raft_leader_middleware(request: Request, call_next):
     if request.url.path.endswith("/health"):
         return await call_next(request)
     
-    if raft_node and not raft_node.is_leader():
+    if raft_node and not await raft_node.is_leader():
         print(f"raft_node is not leader, redirecting to leader... {raft_node}")
         if not raft_node.leader_id:
             raise HTTPException(status_code=503, detail="No leader node available")
@@ -90,7 +90,7 @@ async def health_check():
     """
     Health check endpoint to verify if the service is running.
     """
-    if raft_node and not raft_node.is_leader():
+    if raft_node and not await raft_node.is_leader():
         raise HTTPException(status_code=503, detail="Not the leader node")
 
 app.include_router(router)  # Include the main API router with dependency injection for raft_node

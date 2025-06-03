@@ -1,4 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
+import createAutoReconnectingWebSocket from "../utils/util";
+import { ReconnectingWebSocketController } from "../types";
 
 export interface PlayerInfo {
   id: string;
@@ -40,10 +42,10 @@ export function useGame(
       };
     }, {})
   );
-  const wsRef = useRef<WebSocket>(null);
+  const wsRef = useRef<ReconnectingWebSocketController>(null);
 
   const send = useCallback((payload: any) => {
-    wsRef.current?.send(JSON.stringify(payload));
+    wsRef.current?.socket?.send(JSON.stringify(payload));
   }, []);
 
   const roll = useCallback(() => {
@@ -62,85 +64,87 @@ export function useGame(
 
   useEffect(() => {
     // Open WebSocket with sub-protocol=token
-    const ws = new WebSocket(`ws://game.local:8080/ws/game/${code}`, token);
+    const ws = createAutoReconnectingWebSocket(
+      `${import.meta.env.VITE_APP_WS_URL}/game/${code}`,
+      token,
+      {
+        reconnectInterval: 1000,
+        maxRetries: 5,
+        onMessage(event, ws) {
+          const msg = JSON.parse(event.data);
+          switch (msg.type) {
+            case "state":
+              // full game state broadcast
+              if (msg.positions) setPositions(msg.positions);
+              if (msg.next_turn) setCurrentTurn(msg.next_turn.id);
+              setPendingRoll(
+                game.players.reduce(
+                  (prev, curr) => ({ ...prev, [curr.id]: null }),
+                  {}
+                )
+              );
+              break;
+
+            case "roll":
+              setPendingRoll({ ...pendingRoll, [msg.player]: msg.roll });
+              if (msg.next_turn) setCurrentTurn(msg.next_turn.id);
+              break;
+
+            case "move":
+              if (msg.positions) {
+                // const _positions = { ...positions };
+                // _positions[msg.player] = msg.positions;
+
+                setPositions((prev) => ({
+                  ...prev,
+                  [msg.player]: msg.positions,
+                }));
+              }
+              if (msg.next_player) setCurrentTurn(msg.next_player.id);
+              setPendingRoll(
+                game.players.reduce(
+                  (prev, curr) => ({ ...prev, [curr.id]: null }),
+                  {}
+                )
+              );
+              break;
+
+            case "skip":
+              if (msg.next_turn) setCurrentTurn(msg.next_turn.id);
+              setPendingRoll(
+                game.players.reduce(
+                  (prev, curr) => ({ ...prev, [curr.id]: null }),
+                  {}
+                )
+              );
+              break;
+
+            case "win":
+              notifyUser(`🏆🏆🏆 ${msg.winner.name} Won!!! Game Over.`);
+              ws.close();
+              setTimeout(() => {
+                window.location.href = "/";
+              }, 5000);
+              break;
+
+            case "error":
+              notifyUser(msg.message);
+
+            default:
+              console.warn("Unknown WS message:", msg);
+          }
+        },
+        onOpen(event, ws) {
+          console.log("WebSocket connection established:", ws.protocol);
+        },
+      }
+    );
     wsRef.current = ws;
 
-    ws.onopen = () => {
-      console.log("WS connected, protocol:", ws.protocol);
-    };
-
-    ws.onmessage = (evt) => {
-      const msg = JSON.parse(evt.data);
-      switch (msg.type) {
-        case "state":
-          // full game state broadcast
-          if (msg.positions) setPositions(msg.positions);
-          if (msg.next_turn) setCurrentTurn(msg.next_turn.id);
-          setPendingRoll(
-            game.players.reduce(
-              (prev, curr) => ({ ...prev, [curr.id]: null }),
-              {}
-            )
-          );
-          break;
-
-        case "roll":
-          setPendingRoll({ ...pendingRoll, [msg.player]: msg.roll });
-          if (msg.next_turn) setCurrentTurn(msg.next_turn.id);
-          break;
-
-        case "move":
-          if (msg.positions) {
-            // const _positions = { ...positions };
-            // _positions[msg.player] = msg.positions;
-
-            setPositions((prev) => ({ ...prev, [msg.player]: msg.positions }));
-          }
-          if (msg.next_player) setCurrentTurn(msg.next_player.id);
-          setPendingRoll(
-            game.players.reduce(
-              (prev, curr) => ({ ...prev, [curr.id]: null }),
-              {}
-            )
-          );
-          break;
-
-        case "skip":
-          if (msg.next_turn) setCurrentTurn(msg.next_turn.id);
-          setPendingRoll(
-            game.players.reduce(
-              (prev, curr) => ({ ...prev, [curr.id]: null }),
-              {}
-            )
-          );
-          break;
-
-        case "win":
-          notifyUser(`🏆🏆🏆 ${msg.winner.name} Won!!! Game Over.`);
-          ws.close();
-          setTimeout(() => {
-            window.location.href = "/";
-          }, 5000);
-          break;
-
-        case "error":
-          notifyUser(msg.message);
-
-        default:
-          console.warn("Unknown WS message:", msg);
-      }
-    };
-
-    ws.onerror = (err) => {
-      console.error("WS error", err);
-    };
-
-    ws.onclose = () => {
-      console.log("WS closed");
-    };
-
     return () => {
-      ws.close();
+      if (wsRef.current) {
+        wsRef.current.close();
+      }
     };
   }, [code, token]);
 

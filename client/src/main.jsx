@@ -15,12 +15,15 @@ const gameLoader = async ({ params }) => {
     return redirect("/");
   }
 
-  const response = await fetch(`http://game.local:8080/game/${code}`, {
-    method: "GET",
-    headers: {
-      Authorization: `Bearer ${token}`,
-    },
-  });
+  const response = await fetch(
+    `${import.meta.env.VITE_APP_API_URL}/game/${code}`,
+    {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    }
+  );
   if (response.status === 404) {
     // Game not found
     return redirect(`/`);

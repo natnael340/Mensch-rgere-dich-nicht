@@ -2,7 +2,6 @@ import asyncio
 import grpc
 import logging
 from typing import TypedDict, Dict, Union
-import redis.asyncio as aioredis
 
 import random
 import time
@@ -85,8 +84,9 @@ class RaftNode:
 
         logger.info(f"Node {self.node_id} initialized with {len(peers)} peers")
 
-    def is_leader(self) -> bool:
-        return self.role == Role.LEADER
+    async def is_leader(self) -> bool:
+        async with self.state_lock:
+            return self.role == Role.LEADER
 
     @retry(stop=stop_after_attempt(1))
     async def send_request_vote(self, peer: PeerNode, log: List) -> Dict[str, Any]:
@@ -322,24 +322,6 @@ class RaftNode:
             await self.shutdown()
             raise
 
-    async def subscribe_loop(self, queue: asyncio.Queue) -> None:
-        assert self.redis is not None, "Redis connection not initialized"
-        
-        pubsub = self.redis.pubsub()
-        await pubsub.subscribe("raft:commands")
-
-        async for message in pubsub.listen():
-            if message["type"] != "message":
-                continue
-
-            command = message["data"]
-            logger.info(f"[{self.node_id}] [_subscribe_to_redis_loop] got: {command!r}")
-
-            try:
-                await queue.put(command)
-            except Exception as exc:
-                # Possibly we stepped down; drop the command
-                logger.info(f"[{self.node_id}] append_log_entry error: {exc}")
 
 
     async def run(self) -> None:
@@ -398,6 +380,10 @@ class RaftNode:
                     logger.info(f"Node {self.node_id} committed log entry at index {new_index}")
                     break
                 logger.info(f"Node {self.node_id} waiting for majority to commit log entry at index {new_index}, current count: {count}")
+
+                if self.role != Role.LEADER:
+                    logger.info(f"Node {self.node_id} stepped down from leader while waiting for commit")
+                    return
             await asyncio.sleep(0.5)
 
         

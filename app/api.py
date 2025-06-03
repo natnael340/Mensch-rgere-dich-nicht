@@ -43,7 +43,7 @@ async def get_game(code: str):
 async def redirect_to_leader(websocket: WebSocket, code: str, token: str) -> bool:
     global raft_node
     
-    if raft_node and not raft_node.is_leader():
+    if raft_node and not await raft_node.is_leader():
         leader = next((member for member in raft_node.peers if member["id"] == raft_node.leader_id), None)
         if not leader:
             await websocket.close(code=503, reason="No leader node available")
@@ -123,6 +123,9 @@ async def websocket_game(websocket: WebSocket, code: str, ):
         ws_manager.disconnect(code, websocket)
         await game_manager.set_player_state(code, player.id, False)
         await ws_manager.broadcast(code, {"type": "player_left", "player": player.model_dump()})
+    except Exception as e:
+        print(f"WebSocket error: {e}")
+        await websocket.close(code=1011, reason="Internal Server Error")
 
     
 

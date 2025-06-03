@@ -1,5 +1,7 @@
 import React, { useEffect, useRef } from "react";
 import { useLoaderData } from "react-router";
+import { ReconnectingWebSocketController } from "./types";
+import createAutoReconnectingWebSocket from "./utils/util";
 
 type Player = { id: string; name: string };
 
@@ -7,36 +9,51 @@ function Lobby() {
   let { code, token, game } = useLoaderData();
   const [players, setPlayers] = React.useState<Player[]>(game.players);
   const [isHost, setIsHost] = React.useState(false);
-  const gameWs = useRef<WebSocket | null>(null);
+  // const gameWs = useRef<WebSocket | null>(null);
+
+  const gameWs = useRef<ReconnectingWebSocketController | null>(null);
 
   useEffect(() => {
     const playerId = localStorage.getItem(`player_id-${code}`);
     setIsHost(players[0].id == playerId);
 
-    const ws = new WebSocket(`ws://game.local:8080/ws/game/${code}`, token);
+    const ws = createAutoReconnectingWebSocket(
+      `${import.meta.env.VITE_APP_WS_URL}/game/${code}`,
+      token,
+      {
+        reconnectInterval: 2000,
+        maxRetries: 5,
+        onMessage: (event, ws) => {
+          const msg = JSON.parse(event.data);
+          if (msg.type == "player_joined") {
+            console.log("Player joined", msg);
+            if (!players.find((p) => p.id == msg.player.id)) {
+              setPlayers((prev) => [...prev, { ...msg.player, joined: true }]);
+            } else {
+              setPlayers((prev) => {
+                return prev.map((p) =>
+                  p.id == msg.player.id ? { ...p, joined: true } : p
+                );
+              });
+            }
+          } else if (msg.type == "game_started") {
+            window.location.href = `/game/${code}`;
+          }
+        },
+      }
+    );
     gameWs.current = ws;
-    ws.onmessage = (e) => {
-      const msg = JSON.parse(e.data);
-      if (msg.type == "player_joined") {
-        console.log("Player joined", msg);
-        if (!players.find((p) => p.id == msg.player.id)) {
-          setPlayers((prev) => [...prev, { ...msg.player, joined: true }]);
-        } else {
-          setPlayers((prev) => {
-            return prev.map((p) =>
-              p.id == msg.player.id ? { ...p, joined: true } : p
-            );
-          });
-        }
-      } else if (msg.type == "game_started") {
-        window.location.href = `/game/${code}`;
+
+    return () => {
+      if (gameWs.current) {
+        gameWs.current.close();
       }
     };
   }, []);
 
   const startGame = () => {
     if (gameWs.current) {
-      gameWs.current.send(
+      gameWs.current.socket?.send(
         JSON.stringify({
           action: "start",
         })
