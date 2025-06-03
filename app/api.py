@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect, WebSocketException, Request
+from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect, WebSocketException
 from app.manager import game_manager
 from app.models import JoinRequest, JoinResponse, Player, CreateGameResponse
 from app.utils.jwt import create_token, verify_token
@@ -65,7 +65,9 @@ async def websocket_game(websocket: WebSocket, code: str, ):
     should_redirect = await redirect_to_leader(websocket, code, token)
     if should_redirect:
         return
-    
+    if websocket.application_state == 2:
+        await websocket.close(code=1006, reason="WebSocket is disconnected")
+        return
     await websocket.accept(subprotocol=token)
 
     try:
@@ -125,7 +127,8 @@ async def websocket_game(websocket: WebSocket, code: str, ):
         await ws_manager.broadcast(code, {"type": "player_left", "player": player.model_dump()})
     except Exception as e:
         print(f"WebSocket error: {e}")
-        await websocket.close(code=1011, reason="Internal Server Error")
+        if websocket.application_state == 1:
+            await websocket.close(code=1011, reason="Internal Server Error")
 
     
 

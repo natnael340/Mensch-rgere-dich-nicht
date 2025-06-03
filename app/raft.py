@@ -64,7 +64,7 @@ def raft_command(command: str):
         async def wrapper(*args, **kwargs):
             
             print(f"Executing command: {command} with code: ")
-            print(json.dumps(args[2:]))
+            print(json.dumps(args[1:]))
             print("Syncing with Raft cluster...")
             
             entry = json.dumps({"command": command, "args": args[1:]})
