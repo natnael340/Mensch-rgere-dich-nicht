@@ -1,4 +1,4 @@
-from typing import List, Optional, Dict, Tuple
+from typing import List, Optional, Dict, Tuple, Union
 from pydantic import BaseModel, Field
 
 class Player(BaseModel):
@@ -36,22 +36,22 @@ class CreateGameResponse(BaseModel):
 
 class PeerNode(BaseModel):
     id: str
+    server: str
     host: str
     port: int
 
 class LogEntry(BaseModel):
     term: int
     command: Optional[str] = None
-    game: Game = None
 
     
 
 class AppendEntriesRPC(BaseModel):
     term: int
     leader_id: str
-    prev_log_index: int
+    prev_log_index: int 
     prev_log_term: int
-    entries: List[Tuple[str, Dict]]
+    entries: List[Dict[str, Union[int, List[str]]]]
     leader_commit: int
 
 class RequestVoteRPC(BaseModel):

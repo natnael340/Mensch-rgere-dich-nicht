@@ -23,3 +23,25 @@ export interface Occupant {
   tokenIdx: number;
   color: ColorType;
 }
+
+export interface ReconnectingWebSocketOptions {
+  /** Milliseconds to wait before each reconnect attempt (default = 1000) */
+  reconnectInterval?: number;
+  /** Maximum number of consecutive reconnect attempts (default = Infinity) */
+  maxRetries?: number;
+  /** Called when the socket opens */
+  onOpen?: (event: Event, ws: WebSocket) => void;
+  /** Called when a message is received */
+  onMessage?: (event: MessageEvent, ws: WebSocket) => void;
+  /** Called when there is a socket error */
+  onError?: (event: Event, ws: WebSocket) => void;
+  /** Called when the socket closes */
+  onClose?: (event: CloseEvent, ws: WebSocket) => void;
+}
+
+export interface ReconnectingWebSocketController {
+  /** The current WebSocket instance (or null if not connected) */
+  socket: WebSocket | null;
+  /** Call to permanently stop reconnecting and close the socket */
+  close: () => void;
+}
