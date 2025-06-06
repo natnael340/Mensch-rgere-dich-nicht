@@ -25,7 +25,7 @@ npm start
 
 ## WebSocket Compatibility
 
-This implementation includes a compatibility layer that allows the same client code to work with both the Python (WebSocket) and Node.js (Socket.IO) backends. See [WEBSOCKET.md](WEBSOCKET.md) for detailed information about the compatibility approach.
+This implementation includes a compatibility layer that allows the same client code to work with both the Python (WebSocket) and Node.js (WS) backends. See [WEBSOCKET.md](WEBSOCKET.md) for detailed information about the compatibility approach.
 
 ```javascript
 // Example client code that works with both backends

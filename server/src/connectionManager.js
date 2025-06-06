@@ -15,11 +15,6 @@ class ConnectionManager {
    */
   connect(ws, playerId) {
     this.activeConnections[playerId] = ws;
-    console.log(
-      `Player ${JSON.stringify(playerId)} connected. Total: ${
-        Object.keys(this.activeConnections).length
-      }`
-    );
   }
 
   /**
