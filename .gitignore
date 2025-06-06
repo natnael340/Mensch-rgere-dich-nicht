@@ -28,3 +28,4 @@ client/*.sw?
 .venv
 .env
 *.pyc
+server/node_modules
