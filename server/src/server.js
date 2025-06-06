@@ -5,6 +5,15 @@ const cors = require("cors");
 const gameManager = require("./gameManager");
 const connectionManager = require("./connectionManager");
 const { createToken, verifyToken } = require("./utils/jwt");
+const {
+  startGrpcServer,
+  startupRaftNode,
+  raftCommand,
+  Role,
+  getRaftNode,
+  me,
+} = require("./raft");
+
 const url = require("url");
 
 const app = express();
@@ -18,6 +27,15 @@ const corsOptions = {
 };
 app.use(cors(corsOptions));
 app.use(express.json());
+app.use((req, res, next) => {
+  const node = getRaftNode();
+  if (req.method != "GET" && node.role !== Role.LEADER) {
+    return res
+      .status(403)
+      .json({ error: "Only the leader can perform this action." });
+  }
+  next();
+});
 
 const wss = new WebSocket.Server({
   server,
@@ -204,9 +222,12 @@ wss.on("connection", (ws, req) => {
 });
 
 // Start server
-const PORT = process.env.PORT || 8080;
-server.listen(PORT, () => {
+const PORT = parseInt(me.server.split(":")[1]);
+server.listen(PORT, async () => {
   console.log(`Server running on port ${PORT}`);
+
+  await startupRaftNode();
+  await startGrpcServer();
 });
 
 module.exports = app;
