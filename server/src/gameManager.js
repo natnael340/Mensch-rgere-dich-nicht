@@ -46,7 +46,6 @@ class GameManager {
    * @returns {Game} The created game
    */
   createGame() {
-    console.log("Creating new game: I was called");
     let code = generateGameCode();
     while (this.games[code]) {
       code = generateGameCode();
@@ -117,7 +116,6 @@ class GameManager {
     if (code) {
       return [this.joinGame(code, player), player];
     }
-    console.log(this.games);
     let game = this.findAvailableGame();
     if (game) {
       return [this.joinGame(game.code, player), player];
@@ -234,7 +232,7 @@ class GameManager {
       if (finishStep > 3) {
         throw new Error("Roll too large to move in finish lane.");
       }
-      skip = true
+      skip = true;
       newPosition = currentPosition + game.pending_roll;
     }
 
@@ -304,6 +302,106 @@ class GameManager {
 
     game.current_turn = (game.current_turn + 1) % game.players.length;
     return game.players[game.current_turn];
+  }
+
+  applyCommand(cmdStr) {
+    const cmd = JSON.parse(cmdStr);
+    console.log(`Applying command: ${cmd.command} with args:`, cmd.args);
+
+    switch (cmd.command) {
+      case "create_game": {
+        const [code] = cmd.args;
+        this.games[code] = new Game(code);
+        break;
+      }
+
+      case "join_game": {
+        const [code, playerData] = cmd.args;
+        const game = this.games[code];
+        if (!game) return;
+
+        // Create player object directly without using Player class
+        const player = {
+          id: playerData.id || this.nameToUuid(playerData.name),
+          name: playerData.name,
+        };
+
+        game.players.push(player);
+        game.initPositions();
+
+        game.players.forEach((p, idx) => {
+          game.startOffset[p.id] = idx * 10;
+        });
+        break;
+      }
+
+      case "roll_dice": {
+        const [code, pendingRoll, currentTurn] = cmd.args;
+        const game = this.games[code];
+        if (!game) return;
+
+        game.pending_roll = pendingRoll;
+        game.current_turn = currentTurn;
+        break;
+      }
+
+      case "move_piece": {
+        const [code, playerId, pieceIndex, newPosition] = cmd.args;
+        const game = this.games[code];
+        if (!game) return;
+
+        // Update the position of that player's piece
+        if (
+          game.positions[playerId] &&
+          game.positions[playerId].length > pieceIndex
+        ) {
+          game.positions[playerId][pieceIndex] = newPosition;
+        }
+
+        game.pending_roll = null;
+
+        // Check if the player has won (all pieces at position >= 40)
+        const justWon = game.positions[playerId].every((pos) => pos >= 40);
+        if (!justWon) {
+          // Use determineNextPlayer instead of getNextTurn
+          this.determineNextPlayer(game, false);
+        }
+        break;
+      }
+
+      case "clear_game": {
+        const [code] = cmd.args;
+        if (this.games[code]) {
+          delete this.games[code];
+        }
+        break;
+      }
+
+      case "start_game": {
+        const [code] = cmd.args;
+        const game = this.games[code];
+        if (game) {
+          game.started = true;
+        }
+        break;
+      }
+
+      case "set_player_state": {
+        const [code, playerId, online] = cmd.args;
+        const game = this.games[code];
+        if (!game) return;
+
+        const pid = game.players.findIndex((p) => p.id === playerId);
+        if (pid !== -1) {
+          // Add isOnline property if it doesn't exist yet
+          game.players[pid].isOnline = online;
+        }
+        break;
+      }
+
+      default:
+        console.warn(`Unknown command: ${cmd.command}`);
+    }
   }
 }
 

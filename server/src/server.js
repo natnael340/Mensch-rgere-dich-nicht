@@ -131,7 +131,6 @@ wss.on("connection", (ws, req) => {
       try {
         const data = JSON.parse(message);
         const action = data.action;
-        console.log("action", action);
 
         if (action === "start") {
           const game = gameManager.getGame(gameCode);

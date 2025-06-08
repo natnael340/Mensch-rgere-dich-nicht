@@ -400,7 +400,7 @@ class RaftNode extends EventEmitter {
    */
   async applyEntries() {
     // Lazy load to avoid circular import if needed
-    const { game_manager } = await import("./app/manager.js");
+    const { game_manager } = await import("./gameManager.js");
     while (this.lastApplied < this.commitIndex) {
       this.lastApplied += 1;
       const entry = this.log[this.lastApplied];
