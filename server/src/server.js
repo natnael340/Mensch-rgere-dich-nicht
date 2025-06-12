@@ -5,10 +5,10 @@ const cors = require("cors");
 const gameManager = require("./gameManager");
 const connectionManager = require("./connectionManager");
 const { createToken, verifyToken } = require("./utils/jwt");
+const eventBus = require("./utils/eventBus"); // Add this import
 const {
   startGrpcServer,
   startupRaftNode,
-  raftCommand,
   Role,
   getRaftNode,
   me,
@@ -37,6 +37,78 @@ app.use((req, res, next) => {
   next();
 });
 
+// Set up event listeners for game state changes
+eventBus.on("game:created", (data) => {
+  console.log(`Event: Game created with code ${data.code}`);
+  // No broadcast needed here as players haven't joined yet
+});
+
+eventBus.on("game:player_joined", (data) => {
+  console.log(`Event: Player ${data.player.name} joined game ${data.code}`);
+  connectionManager.broadcast({
+    type: "player_joined",
+    player: { id: data.player.id, name: data.player.name },
+  });
+});
+
+eventBus.on("game:started", (data) => {
+  console.log(`Event: Game ${data.code} started`);
+  connectionManager.broadcast({
+    type: "game_started",
+    current_turn: data.current_turn,
+  });
+});
+
+eventBus.on("game:dice_rolled", (data) => {
+  console.log(
+    `Event: Player ${data.playerId} rolled ${data.roll} in game ${data.code}`
+  );
+  connectionManager.broadcast({
+    type: "roll",
+    player: data.playerId,
+    roll: data.roll,
+    next_turn: data.nextTurn,
+  });
+});
+
+eventBus.on("game:piece_moved", (data) => {
+  console.log(
+    `Event: Player ${data.playerId} moved piece in game ${data.code}`
+  );
+  connectionManager.broadcast({
+    type: "move",
+    player: data.playerId,
+    positions: data.positions,
+    next_player: data.nextPlayer,
+  });
+
+  if (data.justWon) {
+    const game = gameManager.getGame(data.code);
+    const player = game.players.find((p) => p.id === data.playerId);
+
+    connectionManager.broadcast({
+      type: "win",
+      winner: { id: data.playerId, name: player.name },
+    });
+  }
+
+  if (data.skip) {
+    const game = gameManager.getGame(data.code);
+    connectionManager.broadcast({
+      type: "state",
+      positions: game.positions,
+      next_turn: game.players[game.current_turn],
+    });
+  }
+});
+
+eventBus.on("game:piece_kicked", (data) => {
+  console.log(
+    `Event: Player ${data.playerId}'s piece ${data.pieceIndex} was kicked back home`
+  );
+  // You might want to send a specific notification for this
+});
+
 const wss = new WebSocket.Server({
   server,
   verifyClient: (info) => {
@@ -45,9 +117,13 @@ const wss = new WebSocket.Server({
 });
 
 // REST API Routes
-app.post("/game", (req, res) => {
-  const game = gameManager.createGame();
-  res.json({ code: game.code });
+app.post("/game", async (req, res) => {
+  try {
+    const game = gameManager.createGame();
+    res.json({ code: game.code });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
 });
 
 app.post("/game/join", (req, res) => {
@@ -127,77 +203,45 @@ wss.on("connection", (ws, req) => {
       player: { id: playerId, name: playerName },
     });
 
-    ws.on("message", (message) => {
+    ws.on("message", async (message) => {
       try {
         const data = JSON.parse(message);
         const action = data.action;
 
         if (action === "start") {
-          const game = gameManager.getGame(gameCode);
-          connectionManager.broadcast({
-            type: "game_started",
-            current_turn: game.players[game.current_turn],
-          });
+          try {
+            console.log("sanity check", gameCode);
+            await gameManager.startGame(gameCode);
+            // Don't need to broadcast here - the event listener handles it
+          } catch (error) {
+            ws.send(JSON.stringify({ type: "error", message: error.message }));
+          }
         } else if (action === "roll") {
-          const [roll, nextTurn] = gameManager.rollDice(gameCode, playerId);
-          connectionManager.broadcast({
-            type: "roll",
-            player: playerId,
-            roll,
-            next_turn: nextTurn,
-          });
+          try {
+            await gameManager.rollDice(gameCode, playerId);
+            // Don't need to broadcast here - the event listener handles it
+          } catch (error) {
+            ws.send(JSON.stringify({ type: "error", message: error.message }));
+          }
         } else if (action === "move") {
           try {
             const token_idx = data.token_idx;
-            const [positions, nextPlayer, justWon, skip] =
-              gameManager.movePiece(gameCode, playerId, token_idx);
-            console.log(
-              "positions",
-              positions,
-              "nextPlayer",
-              nextPlayer,
-              "justWon",
-              justWon,
-              "skip",
-              skip
-            );
+            await gameManager.movePiece(gameCode, playerId, token_idx);
+            // Don't need to broadcast here - the event listener handles it
+          } catch (error) {
+            ws.send(JSON.stringify({ type: "error", message: error.message }));
 
-            connectionManager.broadcast({
-              type: "move",
-              player: playerId,
-              positions,
-              next_player: nextPlayer,
-            });
-
-            if (justWon) {
-              connectionManager.broadcast({
-                type: "win",
-                winner: { id: playerId, name: playerName },
-              });
-            }
-
-            // --- Add this block for skip functionality ---
-            if (skip) {
-              const game = gameManager.getGame(gameCode);
+            // You might still want to maintain this error handling for moves
+            const game = gameManager.getGame(gameCode);
+            if (game) {
+              game.pending_roll = null;
+              game.current_turn = (game.current_turn + 1) % game.players.length;
               connectionManager.broadcast({
                 type: "state",
                 positions: game.positions,
                 next_turn: game.players[game.current_turn],
               });
             }
-          } catch (e) {
-            // Send error to client
-            ws.send(JSON.stringify({ type: "error", message: e.message }));
-
-            // --- Advance turn if move is not possible ---
-            const game = gameManager.getGame(gameCode);
-            game.pending_roll = null;
-            game.current_turn = (game.current_turn + 1) % game.players.length;
-            connectionManager.broadcast({
-              type: "state",
-              positions: game.positions,
-              next_turn: game.players[game.current_turn],
-            });
           }
         }
       } catch (error) {
@@ -225,7 +269,7 @@ const PORT = parseInt(me.server.split(":")[1]);
 server.listen(PORT, async () => {
   console.log(`Server running on port ${PORT}`);
 
-  await startupRaftNode();
+  startupRaftNode();
   await startGrpcServer();
 });
 

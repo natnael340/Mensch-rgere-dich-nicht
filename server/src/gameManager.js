@@ -1,5 +1,7 @@
 const { v4: uuidv4, v5: uuidv5 } = require("uuid");
 const { MAXIMUM_ALLOWED_PLAYERS } = require("./constants");
+const { raftGameCommand } = require("./utils/raftWrapper");
+const eventBus = require("./utils/eventBus");
 
 // UUID namespace for generating player IDs
 const NAMESPACE = "4372ffc4-1acd-4df8-803f-361787fb5e06";
@@ -39,6 +41,20 @@ class Game {
 class GameManager {
   constructor() {
     this.games = {};
+
+    // Listen for apply commands from Raft
+    eventBus.on("command:apply", (cmdStr) => {
+      this.applyCommand(cmdStr);
+    });
+  }
+
+  _createGame(code) {
+    if (!this.games[code]) {
+      this.games[code] = new Game(code);
+      console.log(`Game created with code: ${code}`);
+      // Emit event for the UI
+      eventBus.emit("game:created", { code });
+    }
   }
 
   /**
@@ -50,9 +66,46 @@ class GameManager {
     while (this.games[code]) {
       code = generateGameCode();
     }
-    const game = new Game(code);
-    this.games[code] = game;
-    return game;
+
+    // Send the create_game command through Raft consensus
+    raftGameCommand("create_game", [code]);
+    this._createGame(code);
+
+    // The actual game will be created by applyCommand when consensus is reached
+    // But for API consistency, we'll return the game object reference
+    return this.games[code];
+  }
+
+  _joinGame(code, playerData) {
+    const game = this.games[code];
+    if (!game) {
+      console.error(`Cannot join game ${code}: game not found`);
+      return;
+    }
+
+    // Check if player already exists to prevent duplicates
+    if (game.players.some((p) => p.id === playerData.id)) {
+      console.log(`Player ${playerData.name} already in game ${code}`);
+      return;
+    }
+
+    // Create player object
+    const player = {
+      id: playerData.id || this.nameToUuid(playerData.name),
+      name: playerData.name,
+    };
+
+    game.players.push(player);
+    game.initPositions();
+
+    // Recalculate all starting positions
+    game.players.forEach((p, idx) => {
+      game.startOffset[p.id] = idx * 10;
+    });
+
+    console.log(`Player ${player.name} joined game ${code}`);
+    // Emit event for the UI
+    eventBus.emit("game:player_joined", { code, player });
   }
 
   /**
@@ -75,17 +128,17 @@ class GameManager {
     if (game.players.some((p) => p.name === player.name)) {
       throw new Error("Player name already taken.");
     }
+
     if (game.started) {
       throw new Error("Game has already started.");
     }
 
-    game.players.push(player);
+    // Just send the join_game command through Raft
+    // The actual state update will happen when consensus is reached
+    raftGameCommand("join_game", [code, player]);
+    this._joinGame(code, player);
 
-    game.initPositions();
-    for (let idx = 0; idx < game.players.length; idx++) {
-      game.startOffset[game.players[idx].id] = idx * 10; // Set start offset for each player
-    }
-
+    // Return reference to the game
     return game;
   }
 
@@ -114,18 +167,66 @@ class GameManager {
     const player = { id: playerId, name };
 
     if (code) {
-      return [this.joinGame(code, player), player];
-    }
-    let game = this.findAvailableGame();
-    if (game) {
-      return [this.joinGame(game.code, player), player];
-    }
+      // If code is provided, try to join that specific game
+      try {
+        // Send join command through Raft
 
-    // Add player to a new game
-    game = this.createGame();
-    game.players.push(player);
+        // Wait for command to be applied through consensus before returning
+        const game = this.games[code];
+        if (!game) {
+          throw new Error("Game not found after joining.");
+        }
+        raftGameCommand("join_game", [code, player]);
+        this._joinGame(code, player);
 
-    return [game, player];
+        return [game, player];
+      } catch (error) {
+        console.error("Error joining game:", error);
+        throw error;
+      }
+    } else {
+      // No code provided, find or create a game
+      let game = this.findAvailableGame();
+
+      if (game) {
+        // Join existing game
+        try {
+          // Send join command through Raft
+          raftGameCommand("join_game", [game.code, player]);
+          this._joinGame(game.code, player);
+          return [this.games[game.code], player];
+        } catch (error) {
+          console.error("Error joining available game:", error);
+          throw error;
+        }
+      } else {
+        // Create new game
+        let code = generateGameCode();
+        while (this.games[code]) {
+          code = generateGameCode();
+        }
+
+        try {
+          // Create game through Raft
+          raftGameCommand("create_game", [code]);
+          this._createGame(code);
+
+          // Wait for consensus (this approach assumes applyCommand is quick)
+          if (!this.games[code]) {
+            throw new Error("Game creation failed.");
+          }
+
+          // Join the newly created game
+          raftGameCommand("join_game", [code, player]);
+          this._joinGame(code, player);
+
+          return [this.games[code], player];
+        } catch (error) {
+          console.error("Error creating new game:", error);
+          throw error;
+        }
+      }
+    }
   }
 
   /**
@@ -168,13 +269,24 @@ class GameManager {
 
     const roll = Math.floor(Math.random() * 6) + 1;
     game.pending_roll = roll;
-
+    let pendingRoll = game.pending_roll;
+    let currentTurn = game.current_turn;
     let nextTurn = null;
     if (roll !== 6 && game.positions[playerId].every((pos) => pos === -1)) {
-      game.pending_roll = null;
-      game.current_turn = (game.current_turn + 1) % game.players.length;
-      nextTurn = game.players[game.current_turn];
+      pendingRoll = null;
+      currentTurn = (game.current_turn + 1) % game.players.length;
+      nextTurn = game.players[currentTurn];
     }
+    raftGameCommand("roll_dice", [code, playerId, roll, currentTurn]);
+    eventBus.emit("game:dice_rolled", {
+      code,
+      playerId,
+      roll,
+      nextTurn,
+    });
+
+    game.pending_roll = pendingRoll;
+    game.current_turn = currentTurn;
 
     return [roll, nextTurn];
   }
@@ -200,10 +312,10 @@ class GameManager {
       throw new Error("Invalid piece index.");
     }
 
-    // --- Position Calculation (from get_token_new_position) ---
     const positions = game.positions[playerId];
     const currentPosition = positions[pieceIndex];
     const start = game.startOffset[playerId];
+
     let newPosition;
     let skip = false;
 
@@ -277,6 +389,16 @@ class GameManager {
       nextPlayer = game.players[game.current_turn];
     }
 
+    eventBus.emit("game:piece_moved", {
+      code,
+      playerId,
+      positions: game.positions[playerId],
+      nextPlayer: nextPlayer,
+      justWon,
+    });
+
+    raftGameCommand("move_piece", [code, playerId, pieceIndex, newPosition]);
+
     return [game.positions[playerId], nextPlayer, justWon, skip];
   }
 
@@ -304,103 +426,132 @@ class GameManager {
     return game.players[game.current_turn];
   }
 
+  _startGame(game) {
+    game.started = true;
+
+    // Emit event for the UI
+    eventBus.emit("game:started", {
+      code: game.code,
+      current_turn: game.players[game.current_turn],
+    });
+  }
+
+  startGame(code) {
+    this._startGame(this.getGame(code));
+  }
+
+  /**
+   * Apply commands after Raft consensus
+   * @param {string} cmdStr - Stringified command
+   */
   applyCommand(cmdStr) {
-    const cmd = JSON.parse(cmdStr);
-    console.log(`Applying command: ${cmd.command} with args:`, cmd.args);
+    try {
+      const cmd = JSON.parse(cmdStr);
+      console.log(`Applying command: ${cmd.command} with args:`, cmd.args);
 
-    switch (cmd.command) {
-      case "create_game": {
-        const [code] = cmd.args;
-        this.games[code] = new Game(code);
-        break;
-      }
-
-      case "join_game": {
-        const [code, playerData] = cmd.args;
-        const game = this.games[code];
-        if (!game) return;
-
-        // Create player object directly without using Player class
-        const player = {
-          id: playerData.id || this.nameToUuid(playerData.name),
-          name: playerData.name,
-        };
-
-        game.players.push(player);
-        game.initPositions();
-
-        game.players.forEach((p, idx) => {
-          game.startOffset[p.id] = idx * 10;
-        });
-        break;
-      }
-
-      case "roll_dice": {
-        const [code, pendingRoll, currentTurn] = cmd.args;
-        const game = this.games[code];
-        if (!game) return;
-
-        game.pending_roll = pendingRoll;
-        game.current_turn = currentTurn;
-        break;
-      }
-
-      case "move_piece": {
-        const [code, playerId, pieceIndex, newPosition] = cmd.args;
-        const game = this.games[code];
-        if (!game) return;
-
-        // Update the position of that player's piece
-        if (
-          game.positions[playerId] &&
-          game.positions[playerId].length > pieceIndex
-        ) {
-          game.positions[playerId][pieceIndex] = newPosition;
+      switch (cmd.command) {
+        case "create_game": {
+          const [code] = cmd.args;
+          this._createGame(code);
+          break;
         }
 
-        game.pending_roll = null;
-
-        // Check if the player has won (all pieces at position >= 40)
-        const justWon = game.positions[playerId].every((pos) => pos >= 40);
-        if (!justWon) {
-          // Use determineNextPlayer instead of getNextTurn
-          this.determineNextPlayer(game, false);
+        case "join_game": {
+          const [code, playerData] = cmd.args;
+          this._joinGame(code, playerData);
+          break;
         }
-        break;
-      }
 
-      case "clear_game": {
-        const [code] = cmd.args;
-        if (this.games[code]) {
-          delete this.games[code];
+        case "roll_dice": {
+          const [code, playerId, roll, currentTurn] = cmd.args;
+          const game = this.games[code];
+          if (!game) return;
+
+          game.pending_roll = roll;
+          if (currentTurn !== null) {
+            game.current_turn = currentTurn;
+          }
+
+          // Emit event for the UI
+          eventBus.emit("game:dice_rolled", {
+            code,
+            playerId,
+            roll,
+            nextTurn: game.players[game.current_turn],
+          });
+          break;
         }
-        break;
-      }
 
-      case "start_game": {
-        const [code] = cmd.args;
-        const game = this.games[code];
-        if (game) {
-          game.started = true;
+        case "move_piece": {
+          const [code, playerId, pieceIndex, newPosition, skip] = cmd.args;
+          const game = this.games[code];
+          if (!game) return;
+
+          // Handle collision with other pieces
+          if (newPosition < 40) {
+            for (const pid in game.positions) {
+              if (pid !== playerId) {
+                const pos = game.positions[pid];
+                for (let i = 0; i < pos.length; i++) {
+                  if (pos[i] === newPosition) {
+                    game.positions[pid][i] = -1; // Send piece back to start
+                    // Emit event for piece kicked back to home
+                    eventBus.emit("game:piece_kicked", {
+                      code,
+                      playerId: pid,
+                      pieceIndex: i,
+                    });
+                  }
+                }
+              }
+            }
+          }
+
+          // Update the position of the player's piece
+          if (
+            game.positions[playerId] &&
+            game.positions[playerId].length > pieceIndex
+          ) {
+            game.positions[playerId][pieceIndex] = newPosition;
+          }
+
+          // Clear pending roll
+          game.pending_roll = null;
+
+          // Check if the player has won
+          const justWon = game.positions[playerId].every((pos) => pos >= 40);
+
+          if (!justWon) {
+            // Next player's turn if not won
+            game.current_turn = (game.current_turn + 1) % game.players.length;
+          }
+
+          // Emit event for the UI
+          eventBus.emit("game:piece_moved", {
+            code,
+            playerId,
+            positions: game.positions[playerId],
+            nextPlayer: justWon ? null : game.players[game.current_turn],
+            justWon,
+          });
+          break;
         }
-        break;
-      }
 
-      case "set_player_state": {
-        const [code, playerId, online] = cmd.args;
-        const game = this.games[code];
-        if (!game) return;
-
-        const pid = game.players.findIndex((p) => p.id === playerId);
-        if (pid !== -1) {
-          // Add isOnline property if it doesn't exist yet
-          game.players[pid].isOnline = online;
+        case "start_game": {
+          const [code] = cmd.args;
+          const game = this.games[code];
+          if (game) {
+            this._startGame(game);
+          }
+          break;
         }
-        break;
-      }
 
-      default:
-        console.warn(`Unknown command: ${cmd.command}`);
+        default:
+          console.warn(`Unknown command: ${cmd.command}`);
+      }
+    } catch (error) {
+      console.error("Error parsing or applying command:", error);
+      console.error("Command string was:", cmdStr);
     }
   }
 }

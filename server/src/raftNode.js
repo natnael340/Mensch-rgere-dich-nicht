@@ -6,6 +6,7 @@ const protoLoader = require("@grpc/proto-loader");
 const { randomInt } = require("crypto");
 
 const { EventEmitter } = require("events");
+const eventBus = require("./utils/eventBus");
 
 // Load the protobuf definitions
 const PROTO_PATH = path.join(__dirname, "..", "..", "raft.proto"); // adjust path as needed
@@ -236,8 +237,12 @@ class RaftNode extends EventEmitter {
   async handleAppendEntries(msg) {
     try {
       if (msg.term < this.currentTerm) {
+        console.info(
+          `Node ${this.nodeId} rejecting AppendEntries: lower term (${msg.term} < ${this.currentTerm})`
+        );
         return { term: this.currentTerm, success: false };
       }
+
       this.currentTerm = msg.term;
       this.leaderId = msg.leader_id;
       this.role = Role.FOLLOWER;
@@ -250,7 +255,7 @@ class RaftNode extends EventEmitter {
           this.log[msg.prev_log_index].term !== msg.prev_log_term
         ) {
           console.info(
-            `Node ${this.nodeId} rejected AppendEntries: prev_log_index ${msg.prev_log_index} mismatch`
+            `Node ${this.nodeId} rejected AppendEntries: prev_log_index ${msg.prev_log_index} mismatch (local log length: ${this.log.length})`
           );
           return { term: this.currentTerm, success: false };
         }
@@ -260,13 +265,35 @@ class RaftNode extends EventEmitter {
         term: e.term,
         command: e.command,
       }));
+
+      if (newEntries.length > 0) {
+        console.info(
+          `Node ${this.nodeId} appending ${
+            newEntries.length
+          } entries to log, starting at index ${msg.prev_log_index + 1}`
+        );
+
+        // For detailed debugging, log the first few characters of each command
+        newEntries.forEach((entry, idx) => {
+          const commandPreview = entry.command
+            ? `${entry.command.substring(0, 30)}...`
+            : "empty";
+          console.debug(
+            `Entry ${idx}: term=${entry.term}, command=${commandPreview}`
+          );
+        });
+      }
+
       this.log = this.log.slice(0, msg.prev_log_index + 1).concat(newEntries);
 
       if (msg.leader_commit > this.commitIndex) {
+        const oldCommitIndex = this.commitIndex;
         this.commitIndex = Math.min(msg.leader_commit, this.log.length - 1);
+        console.info(
+          `Node ${this.nodeId} updated commitIndex from ${oldCommitIndex} to ${this.commitIndex}`
+        );
         await this.applyEntries();
       }
-
       return { term: this.currentTerm, success: true };
     } catch (err) {
       console.error(`Node ${this.nodeId} error handling AppendEntries:`, err);
@@ -338,6 +365,7 @@ class RaftNode extends EventEmitter {
   async sendHeartbeats() {
     try {
       if (this.role !== Role.LEADER) return;
+
       const tasks = this.peers.map(async (peer) => {
         const prevIdx = this.nextIndex[peer.id] - 1;
         const prevTerm = prevIdx >= 0 ? this.log[prevIdx].term : 0;
@@ -351,46 +379,99 @@ class RaftNode extends EventEmitter {
           entries: entries,
           leader_commit: this.commitIndex,
         };
+
         try {
           const reply = await this.sendAppendEntries(peer, msg);
+
           if (reply.term > this.currentTerm) {
+            console.warn(
+              `Node ${this.nodeId} discovered higher term from ${peer.id} (${reply.term} > ${this.currentTerm}), stepping down`
+            );
             this.currentTerm = reply.term;
             this.role = Role.FOLLOWER;
             this.votedFor = null;
-            console.info(
-              `Node ${this.nodeId} stepped down to FOLLOWER due to higher term ${reply.term}`
-            );
             if (this.heartbeatTimer) {
               clearInterval(this.heartbeatTimer);
               this.heartbeatTimer = null;
             }
             return;
           }
+
           if (reply.success) {
             if (entries.length > 0) {
+              const oldMatchIndex = this.matchIndex[peer.id];
               this.matchIndex[peer.id] = prevIdx + entries.length;
               this.nextIndex[peer.id] = this.matchIndex[peer.id] + 1;
               console.info(
-                `Node ${this.nodeId} replicated to ${peer.id}, match_index: ${
+                `Node ${this.nodeId} successfully replicated ${
+                  entries.length
+                } entries to ${
+                  peer.id
+                }, matchIndex updated from ${oldMatchIndex} to ${
                   this.matchIndex[peer.id]
                 }`
               );
             }
           } else {
+            const oldNextIndex = this.nextIndex[peer.id];
             this.nextIndex[peer.id] = Math.max(0, this.nextIndex[peer.id] - 1);
             console.info(
-              `Node ${this.nodeId} reduced next_index for ${peer.id} to ${
+              `Node ${this.nodeId} received failed response from ${
+                peer.id
+              }, reducing nextIndex from ${oldNextIndex} to ${
                 this.nextIndex[peer.id]
               }`
             );
           }
         } catch (err) {
-          // RPC failed; ignore and retry next heartbeat
+          console.error(
+            `Node ${this.nodeId} error sending AppendEntries to ${peer.id}:`,
+            err.message
+          );
         }
       });
+
       await Promise.all(tasks);
+
+      // After all heartbeats sent, check commit status
+      this.updateCommitIndex();
     } catch (err) {
       console.error(`Node ${this.nodeId} error sending heartbeats:`, err);
+    }
+  }
+
+  // Add this helper method to check and update commit indices
+  async updateCommitIndex() {
+    // Only run this logic on the leader
+    if (this.role !== Role.LEADER) return;
+
+    // For each index from our last commit index + 1 to the end of the log
+    for (let n = this.commitIndex + 1; n < this.log.length; n++) {
+      // Skip if entry is from a previous term
+      if (this.log[n].term !== this.currentTerm) continue;
+
+      // Count how many servers have this entry
+      let count = 1; // Start with 1 for self
+      for (const peerId in this.matchIndex) {
+        if (this.matchIndex[peerId] >= n) {
+          count++;
+        }
+      }
+
+      // If majority, update commit index
+      const majority = Math.ceil((this.peers.length + 1) / 2);
+      if (count >= majority) {
+        const oldCommitIndex = this.commitIndex;
+        this.commitIndex = n;
+        console.info(
+          `Node ${
+            this.nodeId
+          } (LEADER) updating commitIndex from ${oldCommitIndex} to ${
+            this.commitIndex
+          } (majority: ${count}/${this.peers.length + 1})`
+        );
+        await this.applyEntries();
+      }
     }
   }
 
@@ -399,12 +480,33 @@ class RaftNode extends EventEmitter {
    * In this example, we assume a game_manager with applyCommand method.
    */
   async applyEntries() {
-    // Lazy load to avoid circular import if needed
-    const { game_manager } = await import("./gameManager.js");
+    if (this.lastApplied < this.commitIndex) {
+      console.info(
+        `Node ${this.nodeId} applying entries from index ${
+          this.lastApplied + 1
+        } to ${this.commitIndex}`
+      );
+    }
+
     while (this.lastApplied < this.commitIndex) {
       this.lastApplied += 1;
       const entry = this.log[this.lastApplied];
-      game_manager.applyCommand(entry.command);
+
+      // Log what we're applying
+      const commandPreview = entry.command
+        ? typeof entry.command === "string" && entry.command.length > 30
+          ? `${entry.command.substring(0, 30)}...`
+          : entry.command
+        : "empty";
+
+      console.info(
+        `Node ${this.nodeId} applying entry at index ${this.lastApplied}: term=${entry.term}, command=${commandPreview}`
+      );
+
+      // Emit event for game manager to handle
+      if (!(await this.isLeader())) {
+        eventBus.emit("command:apply", entry.command);
+      }
     }
   }
 
@@ -454,48 +556,87 @@ class RaftNode extends EventEmitter {
       if (this.role !== Role.LEADER) {
         throw new Error("Not the leader");
       }
+
+      const commandPreview =
+        command.length > 30 ? `${command.substring(0, 30)}...` : command;
+      console.info(
+        `Node ${this.nodeId} (LEADER) appending new entry: ${commandPreview}`
+      );
+
       this.log.push({ term: this.currentTerm, command });
       const newIndex = this.log.length - 1;
-      this.lastApplied = newIndex;
-    } catch (err) {
-      console.error(`Node ${this.nodeId} error appending log entry:`, err);
-    }
+      console.info(
+        `Node ${this.nodeId} appended entry at index ${newIndex}, waiting for consensus...`
+      );
 
-    const total = this.peers.length + 1; // +1 for self
-    const majority = Math.floor(total / 2) + 1;
-    while (true) {
-      let count = 1; // self
-      try {
-        for (const idx of Object.values(this.matchIndex)) {
-          if (idx >= this.log.length - 1) {
-            count += 1;
-          }
-        }
-        if (count >= majority) {
-          this.commitIndex = this.log.length - 1;
-          console.info(
-            `Node ${this.nodeId} committed log entry at index ${this.commitIndex}`
-          );
-          break;
-        }
-        if (this.role !== Role.LEADER) {
-          console.info(
-            `Node ${this.nodeId} stepped down from leader while waiting for commit`
-          );
-          return;
-        }
+      // Track consensus progress
+      let consensusReached = false;
+      let attemptCount = 0;
+      const maxAttempts = 20; // Prevent infinite loop
+
+      while (!consensusReached && attemptCount < maxAttempts) {
+        attemptCount++;
+
+        // Force a heartbeat to speed up replication
+        await this.sendHeartbeats();
+
+        // Wait a bit before checking consensus
+        await new Promise((resolve) => setTimeout(resolve, 500));
+
+        const count = this.getReplicationCount(newIndex);
+        const majority = Math.ceil((this.peers.length + 1) / 2);
+
         console.info(
           `Node ${
             this.nodeId
-          } waiting for majority to commit log entry at index ${
-            this.log.length - 1
-          }, current count: ${count}`
+          } consensus check ${attemptCount}/${maxAttempts} for index ${newIndex}: ${count}/${
+            this.peers.length + 1
+          } nodes, need ${majority}`
         );
-      } catch (err) {
-        console.error(`Node ${this.nodeId} error checking commit status:`);
+
+        if (count >= majority) {
+          consensusReached = true;
+          const oldCommitIndex = this.commitIndex;
+          this.commitIndex = newIndex;
+          console.info(
+            `Node ${this.nodeId} CONSENSUS REACHED for index ${newIndex}, updating commitIndex from ${oldCommitIndex} to ${this.commitIndex}`
+          );
+          await this.applyEntries();
+          break;
+        }
+
+        // If we lost leadership, exit early
+        if (this.role !== Role.LEADER) {
+          console.warn(
+            `Node ${this.nodeId} is no longer leader, abandoning consensus wait`
+          );
+          throw new Error("Leadership lost during consensus");
+        }
       }
-      await new Promise((r) => setTimeout(r, 500));
+
+      if (!consensusReached) {
+        console.error(
+          `Node ${this.nodeId} failed to reach consensus for index ${newIndex} after ${maxAttempts} attempts`
+        );
+        throw new Error("Failed to reach consensus");
+      }
+
+      return true;
+    } catch (err) {
+      console.error(`Node ${this.nodeId} error appending log entry:`, err);
+      throw err;
     }
+  }
+
+  // Helper method to count how many nodes have replicated an entry
+  getReplicationCount(index) {
+    let count = 1; // Start with 1 for self
+    for (const peerId in this.matchIndex) {
+      if (this.matchIndex[peerId] >= index) {
+        count++;
+      }
+    }
+    return count;
   }
 
   /**
