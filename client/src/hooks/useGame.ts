@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import createAutoReconnectingWebSocket from "../utils/util";
 import { ReconnectingWebSocketController } from "../types";
+import { set } from "../../../server/src/server";
 
 export interface PlayerInfo {
   id: string;
@@ -27,6 +28,7 @@ export function useGame(
     initialPendingRoll?: number | null;
   }
 ) {
+  const [loading, setLoading] = useState<boolean>(true);
   const [positions, setPositions] = useState<Record<string, number[]>>(
     opts?.initialPositions || {}
   );
@@ -50,6 +52,7 @@ export function useGame(
 
   const roll = useCallback(() => {
     if (pendingRoll[myPlayerId] === null) {
+      setLoading(true);
       send({ action: "roll" });
     }
   }, []);
@@ -69,9 +72,10 @@ export function useGame(
       token,
       {
         reconnectInterval: 1000,
-        maxRetries: 5,
+        maxRetries: 100,
         onMessage(event, ws) {
           const msg = JSON.parse(event.data);
+          setLoading(false);
           switch (msg.type) {
             case "state":
               // full game state broadcast
@@ -94,7 +98,6 @@ export function useGame(
               if (msg.positions) {
                 // const _positions = { ...positions };
                 // _positions[msg.player] = msg.positions;
-
                 setPositions((prev) => ({
                   ...prev,
                   [msg.player]: msg.positions,
@@ -137,6 +140,10 @@ export function useGame(
         onOpen(event, ws) {
           console.log("WebSocket connection established:", ws.protocol);
         },
+        onClose(event, ws) {
+          console.log("WebSocket connection closed:", event);
+          setLoading(false);
+        },
       }
     );
     wsRef.current = ws;
@@ -154,5 +161,6 @@ export function useGame(
     pendingRoll,
     roll,
     move,
+    loading,
   };
 }

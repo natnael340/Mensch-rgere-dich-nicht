@@ -4,11 +4,13 @@ interface DiceProps {
   rollDice: () => void;
   value?: number | null;
   active?: boolean;
+  loading?: boolean;
 }
 
-function Dice({ rollDice, value: v, active }: DiceProps) {
+function Dice({ rollDice, value: v, active, loading }: DiceProps) {
   const [value, setValue] = React.useState(6);
-  const loadingRef = React.useRef<number>(null);
+  const loadingRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
+  const spinning = React.useRef(false);
   const pos_matrix = [
     [[50, 50]],
     [
@@ -44,24 +46,29 @@ function Dice({ rollDice, value: v, active }: DiceProps) {
   ];
 
   const handleClick = () => {
-    loadingRef.current = setInterval(() => {
-      setValue((prev) => (prev + 1) % 6);
-    }, 100);
     try {
       rollDice();
     } catch (e) {
       console.error("Error rolling dice", e);
-    } finally {
-      clearInterval(loadingRef.current);
     }
   };
 
   useEffect(() => {
-    if (v) {
-      setValue(v);
+    if (!loading) {
+      spinning.current = false;
       loadingRef.current && clearInterval(loadingRef.current);
+      v && setValue(v);
+    } else {
+      spinning.current = true;
+      loadingRef.current = setInterval(() => {
+        if (!spinning.current) return;
+        setValue((prev) => ((prev + 1) % 6) + 1);
+      }, 100);
     }
-  }, [v]);
+    return () => {
+      loadingRef.current && clearInterval(loadingRef.current);
+    };
+  }, [loading]);
 
   return (
     <div
@@ -72,6 +79,7 @@ function Dice({ rollDice, value: v, active }: DiceProps) {
       onClick={active ? handleClick : () => {}}
     >
       <div className="w-10 h-10 bg-white relative m-0.5 rounded-[5px] shadow-[0_0_5px_rgba(0,0,0,0.25)] ">
+        {console.log("Dice value", value) ?? 6}
         {pos_matrix[(value ?? 6) - 1].map((pos, index) => (
           <div
             key={index}

@@ -118,11 +118,21 @@ const wss = new WebSocket.Server({
 
 // REST API Routes
 app.post("/game", async (req, res) => {
+  console.log("Creating a new game");
   try {
     const game = gameManager.createGame();
     res.json({ code: game.code });
   } catch (error) {
     res.status(400).json({ error: error.message });
+  }
+});
+
+app.get("/health", (req, res) => {
+  const node = getRaftNode();
+  if (node.role === Role.LEADER) {
+    res.send("1");
+  } else {
+    res.send("0");
   }
 });
 
@@ -197,6 +207,7 @@ wss.on("connection", (ws, req) => {
     console.log(`Player ${playerName} (${playerId}) joining game ${gameCode}`);
 
     connectionManager.connect(ws, playerId);
+    gameManager.setPlayerState(gameCode, playerId, true);
 
     connectionManager.broadcast({
       type: "player_joined",

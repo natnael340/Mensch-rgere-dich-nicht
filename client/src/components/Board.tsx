@@ -15,6 +15,7 @@ interface BoardProps {
   rollValue: Record<string, number | null>;
   colorMap: Record<string, ColorType>;
   currentTurn: string;
+  loading?: boolean;
 }
 
 function Board({
@@ -25,6 +26,7 @@ function Board({
   rollValue,
   colorMap,
   currentTurn,
+  loading = false,
 }: BoardProps) {
   let playerHome: string | null = null;
   const letters = ["a", "b", "c", "d"];
@@ -142,6 +144,7 @@ function Board({
           {idx - 40 > 1 ? (
             <>
               <Dice
+                loading={colorMap[myPlayerId] == cell.playerId && loading}
                 rollDice={onRoll}
                 value={getRollValue[cell.playerId as ColorType] ?? null}
                 active={
@@ -171,6 +174,7 @@ function Board({
                 player={getHomeTokenFor(cell.playerId as ColorType)}
               />
               <Dice
+                loading={colorMap[myPlayerId] == cell.playerId && loading}
                 rollDice={onRoll}
                 value={getRollValue[cell.playerId as ColorType] ?? null}
                 active={

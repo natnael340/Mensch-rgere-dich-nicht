@@ -23,6 +23,15 @@ class GameManager:
     def apply_command(self, cmd):
         """Apply commands to the game manager."""
         cmd = json.loads(cmd)
+        """
+        create_game: [code]
+        join_game: [code, player: {name: str, id: str, is_online: bool}]
+        roll_dice: [code, pending_roll: Optional[int], current_turn: int]
+        move_piece: [code, player_id: str, piece_index: int, new_position: int]
+        clear_game: [code]
+        start_game: [code]
+        set_player_state: [code, player_id: str, online: bool]
+        """
         print(f"Applying command: {cmd['command']} with args: {cmd['args']}")
         if cmd["command"] == "create_game":
             self.games[cmd['args'][0]] = Game(code=cmd['args'][0])

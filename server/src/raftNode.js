@@ -424,10 +424,10 @@ class RaftNode extends EventEmitter {
             );
           }
         } catch (err) {
-          console.error(
-            `Node ${this.nodeId} error sending AppendEntries to ${peer.id}:`,
-            err.message
-          );
+          // console.error(
+          //   `Node ${this.nodeId} error sending AppendEntries to ${peer.id}:`,
+          //   err.message
+          // );
         }
       });
 
@@ -574,7 +574,7 @@ class RaftNode extends EventEmitter {
       let attemptCount = 0;
       const maxAttempts = 20; // Prevent infinite loop
 
-      while (!consensusReached && attemptCount < maxAttempts) {
+      while (!consensusReached) {
         attemptCount++;
 
         // Force a heartbeat to speed up replication

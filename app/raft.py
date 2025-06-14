@@ -16,7 +16,7 @@ from app.raft_grpc.raft_pb2_grpc import RaftServicer, add_RaftServicer_to_server
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 RAFT_NODE_ID = os.getenv("RAFT_NODE_ID", "node1")
-cfg = load_yaml(os.path.join(BASE_DIR, "config", "raft.yaml"))
+cfg = load_yaml(os.path.join(BASE_DIR, "..", "raft.yaml"))
 
 router = APIRouter()
 

@@ -22,7 +22,7 @@ function GameBoard() {
     toast.success(msg);
   };
 
-  const { positions, currentTurn, pendingRoll, roll, move } = useGame(
+  const { positions, currentTurn, pendingRoll, loading, roll, move } = useGame(
     game,
     code,
     token,
@@ -62,6 +62,7 @@ function GameBoard() {
               rollValue={pendingRoll ?? undefined}
               myPlayerId={myid}
               currentTurn={currentTurn}
+              loading={loading}
             />
           </div>
         </div>

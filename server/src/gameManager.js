@@ -277,7 +277,7 @@ class GameManager {
       currentTurn = (game.current_turn + 1) % game.players.length;
       nextTurn = game.players[currentTurn];
     }
-    raftGameCommand("roll_dice", [code, playerId, roll, currentTurn]);
+    raftGameCommand("roll_dice", [code, roll, currentTurn]);
     eventBus.emit("game:dice_rolled", {
       code,
       playerId,
@@ -382,8 +382,8 @@ class GameManager {
       let iplayer = game.current_turn;
       for (let i = 1; i <= game.players.length; i++) {
         iplayer = (game.current_turn + i) % game.players.length;
-        // If you have is_online logic, check here; otherwise, just break
-        break;
+        // If you have isOnline logic, check here; otherwise, just break
+        if (game.players[iplayer]?.isOnline === true) break;
       }
       game.current_turn = iplayer;
       nextPlayer = game.players[game.current_turn];
@@ -435,9 +435,32 @@ class GameManager {
       current_turn: game.players[game.current_turn],
     });
   }
+  setPlayerState(code, playerId, isOnline) {
+    const game = this.getGame(code);
+    if (!game) {
+      throw new Error("Game not found.");
+    }
+    const iplayer = game.players.findIndex((p) => p.id === playerId);
+    raftGameCommand("set_player_state", [code, playerId, isOnline]);
+
+    game.players[iplayer].isOnline = isOnline;
+  }
 
   startGame(code) {
     this._startGame(this.getGame(code));
+  }
+
+  getNextPlayer(code) {
+    let game = this.getGame(code);
+    if (!game) return;
+    let iplayer = game.current_turn;
+    for (let i = 1; i <= game.players.length; i++) {
+      iplayer = (game.current_turn + i) % game.players.length;
+      // If you have isOnline logic, check here; otherwise, just break
+      if (game.players[iplayer]?.isOnline === true) break;
+    }
+
+    return iplayer;
   }
 
   /**
@@ -445,6 +468,14 @@ class GameManager {
    * @param {string} cmdStr - Stringified command
    */
   applyCommand(cmdStr) {
+    // create_game: [code]
+    // join_game: [code, player: {name: str, id: str, is_online: bool}]
+    // roll_dice: [code, pending_roll: Optional[int], current_turn: int]
+    // move_piece: [code, player_id: str, piece_index: int, new_position: int]
+    // clear_game: [code]
+    // start_game: [code]
+    // set_player_state: [code, player_id: str, online: bool]
+
     try {
       const cmd = JSON.parse(cmdStr);
       console.log(`Applying command: ${cmd.command} with args:`, cmd.args);
@@ -463,7 +494,7 @@ class GameManager {
         }
 
         case "roll_dice": {
-          const [code, playerId, roll, currentTurn] = cmd.args;
+          const [code, roll, currentTurn] = cmd.args;
           const game = this.games[code];
           if (!game) return;
 
@@ -471,50 +502,20 @@ class GameManager {
           if (currentTurn !== null) {
             game.current_turn = currentTurn;
           }
-
-          // Emit event for the UI
-          eventBus.emit("game:dice_rolled", {
-            code,
-            playerId,
-            roll,
-            nextTurn: game.players[game.current_turn],
-          });
           break;
         }
 
         case "move_piece": {
-          const [code, playerId, pieceIndex, newPosition, skip] = cmd.args;
+          // move_piece: [code, player_id: str, piece_index: int, new_position: int]
+          const [code, playerId, pieceIndex, newPosition] = cmd.args;
           const game = this.games[code];
           if (!game) return;
 
           // Handle collision with other pieces
-          if (newPosition < 40) {
-            for (const pid in game.positions) {
-              if (pid !== playerId) {
-                const pos = game.positions[pid];
-                for (let i = 0; i < pos.length; i++) {
-                  if (pos[i] === newPosition) {
-                    game.positions[pid][i] = -1; // Send piece back to start
-                    // Emit event for piece kicked back to home
-                    eventBus.emit("game:piece_kicked", {
-                      code,
-                      playerId: pid,
-                      pieceIndex: i,
-                    });
-                  }
-                }
-              }
-            }
-          }
 
           // Update the position of the player's piece
-          if (
-            game.positions[playerId] &&
-            game.positions[playerId].length > pieceIndex
-          ) {
-            game.positions[playerId][pieceIndex] = newPosition;
-          }
 
+          game.positions[playerId][pieceIndex] = newPosition;
           // Clear pending roll
           game.pending_roll = null;
 
@@ -523,17 +524,9 @@ class GameManager {
 
           if (!justWon) {
             // Next player's turn if not won
-            game.current_turn = (game.current_turn + 1) % game.players.length;
+            game.current_turn = this.getNextPlayer(game.code);
           }
 
-          // Emit event for the UI
-          eventBus.emit("game:piece_moved", {
-            code,
-            playerId,
-            positions: game.positions[playerId],
-            nextPlayer: justWon ? null : game.players[game.current_turn],
-            justWon,
-          });
           break;
         }
 
@@ -545,7 +538,25 @@ class GameManager {
           }
           break;
         }
-
+        case "set_player_state":
+          const [code, playerId, isOnline] = cmd.args;
+          const game = this.games[code];
+          if (game) {
+            const player = game.players.find((p) => p.id === playerId);
+            if (player) {
+              player.isOnline = isOnline;
+              console.log(
+                `Player ${player.name} (${playerId}) is now ${
+                  isOnline ? "online" : "offline"
+                }`
+              );
+            } else {
+              console.warn(`Player ${playerId} not found in game ${code}`);
+            }
+          } else {
+            console.warn(`Game ${code} not found for setting player state`);
+          }
+          break;
         default:
           console.warn(`Unknown command: ${cmd.command}`);
       }

@@ -22,7 +22,7 @@ function Lobby() {
       token,
       {
         reconnectInterval: 2000,
-        maxRetries: 5,
+        maxRetries: 100,
         onMessage: (event, ws) => {
           const msg = JSON.parse(event.data);
           if (msg.type == "player_joined") {
