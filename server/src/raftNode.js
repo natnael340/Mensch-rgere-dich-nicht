@@ -339,7 +339,7 @@ class RaftNode extends EventEmitter {
     await Promise.all(votePromises);
 
     try {
-      const majority = Math.floor(this.peers.length / 2) + 1;
+      const majority = Math.floor((this.peers.length + 1) / 2) + 1;
       if (votes >= majority) {
         this.role = Role.LEADER;
         console.info(

@@ -215,7 +215,7 @@ class RaftNode:
             
         async with self.state_lock:
             # Become leader on majority
-            if votes > len(self.peers) // 2:
+            if votes > (len(self.peers) + 1) // 2:
                 self.role = Role.LEADER
                 logger.info(f"[{self.role}] Node {self.node_id} became LEADER with {votes} votes in term {self.current_term}")
                 for p in self.peers:
