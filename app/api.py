@@ -126,6 +126,7 @@ async def websocket_game(websocket: WebSocket, code: str, ):
         await game_manager.set_player_state(code, player.id, False)
         await ws_manager.broadcast(code, {"type": "player_left", "player": player.model_dump()})
     except Exception as e:
+        ws_manager.disconnect(code, websocket)
         print(f"WebSocket error: {e}")
         if websocket.application_state == 1:
             await websocket.close(code=1011, reason="Internal Server Error")
