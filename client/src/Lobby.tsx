@@ -9,7 +9,6 @@ function Lobby() {
   let { code, token, game } = useLoaderData();
   const [players, setPlayers] = React.useState<Player[]>(game.players);
   const [isHost, setIsHost] = React.useState(false);
-  // const gameWs = useRef<WebSocket | null>(null);
 
   const gameWs = useRef<ReconnectingWebSocketController | null>(null);
 
@@ -72,7 +71,10 @@ function Lobby() {
         </h5>
         <div className="flex flex-col space-y-2">
           {players.map((player, idx) => (
-            <div className="flex flex-row justify-between items-center">
+            <div
+              key={player.name}
+              className="flex flex-row justify-between items-center"
+            >
               <p className="text-gray-800">{player.name}</p>
               <div className="w-2 h-2 rounded-full bg-green-400"></div>
             </div>

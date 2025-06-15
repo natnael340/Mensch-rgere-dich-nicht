@@ -267,17 +267,21 @@ class GameManager {
       throw new Error("Not your turn.");
     }
 
+    // Calculate roll and state changes
     const roll = Math.floor(Math.random() * 6) + 1;
-    game.pending_roll = roll;
-    let pendingRoll = game.pending_roll;
-    let currentTurn = game.current_turn;
     let nextTurn = null;
+
+    // Update local state (leader only)
+    game.pending_roll = roll;
+
     if (roll !== 6 && game.positions[playerId].every((pos) => pos === -1)) {
-      pendingRoll = null;
-      currentTurn = (game.current_turn + 1) % game.players.length;
-      nextTurn = game.players[currentTurn];
+      // If roll isn't 6 and all pieces are home, move to next player
+      game.pending_roll = null;
+      game.current_turn = (game.current_turn + 1) % game.players.length;
+      nextTurn = game.players[game.current_turn];
     }
-    raftGameCommand("roll_dice", [code, roll, currentTurn]);
+
+    // Emit event (leader only)
     eventBus.emit("game:dice_rolled", {
       code,
       playerId,
@@ -285,8 +289,8 @@ class GameManager {
       nextTurn,
     });
 
-    game.pending_roll = pendingRoll;
-    game.current_turn = currentTurn;
+    // Save state via Raft for followers to sync
+    raftGameCommand("roll_dice", [code, game.pending_roll, game.current_turn]);
 
     return [roll, nextTurn];
   }
@@ -301,7 +305,56 @@ class GameManager {
   movePiece(code, playerId, pieceIndex) {
     const game = this.getGame(code);
 
-    // Validation
+    // Validate move
+    this.validateMove(game, playerId, pieceIndex);
+
+    const positions = game.positions[playerId];
+    const currentPosition = positions[pieceIndex];
+    const start = game.startOffset[playerId];
+
+    let [newPosition, skip] = this.calculateNewPosition(
+      currentPosition,
+      game.pending_roll,
+      start
+    );
+
+    // Handle collision with opponent pieces
+    const collisionSkip = this.handleOpponentCollision(
+      game,
+      playerId,
+      newPosition
+    );
+    skip = skip || collisionSkip;
+
+    // Update piece position and reset pending roll
+    game.positions[playerId][pieceIndex] = newPosition;
+    game.pending_roll = null;
+
+    // Check win condition and determine next player
+    const justWon = this.checkWinCondition(game.positions[playerId]);
+    let nextPlayer = null;
+
+    if (!justWon) {
+      nextPlayer = this.determineNextPlayer(game);
+    }
+
+    // Emit event
+    eventBus.emit("game:piece_moved", {
+      code,
+      playerId,
+      positions: game.positions[playerId],
+      nextPlayer: nextPlayer,
+      justWon,
+    });
+
+    // Save the move through Raft consensus
+    raftGameCommand("move_piece", [code, playerId, pieceIndex, newPosition]);
+
+    return [game.positions[playerId], nextPlayer, justWon, skip];
+  }
+
+  // Validate move requirements
+  validateMove(game, playerId, pieceIndex) {
     if (game.pending_roll === null) {
       throw new Error("No dice rolled.");
     }
@@ -311,27 +364,29 @@ class GameManager {
     if (pieceIndex < 0 || pieceIndex >= 4) {
       throw new Error("Invalid piece index.");
     }
+  }
 
-    const positions = game.positions[playerId];
-    const currentPosition = positions[pieceIndex];
-    const start = game.startOffset[playerId];
-
+  // Calculate the new position based on current position and dice roll
+  calculateNewPosition(currentPosition, roll, start) {
     let newPosition;
     let skip = false;
 
     if (currentPosition === -1) {
-      if (game.pending_roll === 6) {
+      // Piece is at home
+      if (roll === 6) {
         newPosition = start;
       } else {
         throw new Error("Need 6 to move out of home.");
       }
     } else if (currentPosition >= 0 && currentPosition < 40) {
+      // Piece is on the main board
       const stepFromStart = (currentPosition - start + 40) % 40;
-      const total = stepFromStart + game.pending_roll;
+      const total = stepFromStart + roll;
 
       if (total < 40) {
-        newPosition = (currentPosition + game.pending_roll) % 40;
+        newPosition = (currentPosition + roll) % 40;
       } else {
+        // Entering finish lane
         const finishPosition = total - 40;
         if (finishPosition > 3) {
           throw new Error("Roll too large to enter finish lane.");
@@ -339,91 +394,72 @@ class GameManager {
         newPosition = 40 + finishPosition;
       }
     } else {
-      // In finish lane
-      const finishStep = currentPosition - 40 + game.pending_roll;
+      // Piece is in finish lane
+      const finishStep = currentPosition - 40 + roll;
       if (finishStep > 3) {
         throw new Error("Roll too large to move in finish lane.");
       }
       skip = true;
-      newPosition = currentPosition + game.pending_roll;
+      newPosition = currentPosition + roll;
     }
 
-    // --- Position taken check (position_taken) ---
+    return [newPosition, skip];
+  }
+
+  // Check if the position is already taken by player's own pieces
+  checkPositionTaken(positions, pieceIndex, newPosition) {
     for (let i = 0; i < positions.length; i++) {
       if (i !== pieceIndex && positions[i] === newPosition) {
         throw new Error("Position already taken.");
       }
     }
+  }
 
-    // --- Collision handling (skip logic) ---
+  // Handle collision with opponent pieces
+  handleOpponentCollision(game, playerId, newPosition) {
+    let skip = false;
+
     if (newPosition < 40) {
+      // Only check collisions on main board
       for (const pid in game.positions) {
         if (pid !== playerId) {
           const pos = game.positions[pid];
           for (let i = 0; i < pos.length; i++) {
             if (pos[i] === newPosition) {
               skip = true;
-              game.positions[pid][i] = -1; // Send piece back to start
+              game.positions[pid][i] = -1;
+
+              eventBus.emit("game:piece_captured", {
+                code: game.code,
+                playerId: pid,
+                positions: game.positions[pid],
+              });
             }
           }
         }
       }
     }
 
-    // --- Update position and pending roll ---
-    game.positions[playerId][pieceIndex] = newPosition;
-    game.pending_roll = null;
-
-    // --- Win and next player logic ---
-    const justWon = game.positions[playerId].every((pos) => pos >= 40);
-    let nextPlayer = null;
-    if (!justWon) {
-      // get_next_turn logic
-      let iplayer = game.current_turn;
-      for (let i = 1; i <= game.players.length; i++) {
-        iplayer = (game.current_turn + i) % game.players.length;
-        // If you have isOnline logic, check here; otherwise, just break
-        if (game.players[iplayer]?.isOnline === true) break;
-      }
-      game.current_turn = iplayer;
-      nextPlayer = game.players[game.current_turn];
-    }
-
-    eventBus.emit("game:piece_moved", {
-      code,
-      playerId,
-      positions: game.positions[playerId],
-      nextPlayer: nextPlayer,
-      justWon,
-    });
-
-    raftGameCommand("move_piece", [code, playerId, pieceIndex, newPosition]);
-
-    return [game.positions[playerId], nextPlayer, justWon, skip];
+    return skip;
   }
 
-  /**
-   * Check if player has won
-   * @param {Array} positions - Player's piece positions
-   * @returns {boolean} True if player has won
-   */
-  hasPlayerWon(positions) {
-    return positions.every((pos) => pos >= 40);
-  }
+  // Determine the next player
+  determineNextPlayer(game) {
+    let iplayer = game.current_turn;
 
-  /**
-   * Determine next player's turn
-   * @param {Game} game - Game object
-   * @param {boolean} justWon - Whether current player just won
-   * @returns {Object|null} Next player or null if game ended
-   */
-  determineNextPlayer(game, justWon) {
-    if (justWon) {
-      return null;
+    for (let i = 1; i <= game.players.length; i++) {
+      iplayer = (game.current_turn + i) % game.players.length;
+      // If player is online, select them
+      if (game.players[iplayer]?.isOnline === true) break;
     }
 
-    game.current_turn = (game.current_turn + 1) % game.players.length;
+    game.current_turn = iplayer;
     return game.players[game.current_turn];
+  }
+
+  // Check if player has won
+  checkWinCondition(positions) {
+    return positions.every((pos) => pos == 43);
   }
 
   _startGame(game) {
@@ -511,12 +547,7 @@ class GameManager {
           const game = this.games[code];
           if (!game) return;
 
-          // Handle collision with other pieces
-
-          // Update the position of the player's piece
-
           game.positions[playerId][pieceIndex] = newPosition;
-          // Clear pending roll
           game.pending_roll = null;
 
           // Check if the player has won
@@ -538,7 +569,7 @@ class GameManager {
           }
           break;
         }
-        case "set_player_state":
+        case "set_player_state": {
           const [code, playerId, isOnline] = cmd.args;
           const game = this.games[code];
           if (game) {
@@ -557,6 +588,7 @@ class GameManager {
             console.warn(`Game ${code} not found for setting player state`);
           }
           break;
+        }
         default:
           console.warn(`Unknown command: ${cmd.command}`);
       }

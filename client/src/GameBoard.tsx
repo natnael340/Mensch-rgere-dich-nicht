@@ -48,27 +48,25 @@ function GameBoard() {
   }, []);
 
   return (
-    <>
-      <div className="flex flex-rows">
-        <Toaster />
-        <div className="flex w-[40rem] h-[40rem] bg-[#F5DEB3] border-8 border-red-600 p-1 relative">
-          <Users players={playerByColor} />
-          <div className="grid grid-cols-11 grid-rows-11 gap-0 flex-1 border-2 border-black">
-            <Board
-              positions={positions}
-              onMove={move}
-              onRoll={roll}
-              colorMap={colorMap}
-              rollValue={pendingRoll ?? undefined}
-              myPlayerId={myid}
-              currentTurn={currentTurn}
-              loading={loading}
-            />
-          </div>
+    <div className="flex flex-rows">
+      <Toaster />
+      <div className="flex w-[40rem] h-[40rem] bg-[#F5DEB3] border-8 border-red-600 p-1 relative">
+        <Users players={playerByColor} />
+        <div className="grid grid-cols-11 grid-rows-11 gap-0 flex-1 border-2 border-black">
+          <Board
+            positions={positions}
+            onMove={move}
+            onRoll={roll}
+            colorMap={colorMap}
+            rollValue={pendingRoll ?? undefined}
+            myPlayerId={myid}
+            currentTurn={currentTurn}
+            loading={loading}
+          />
         </div>
-        <div></div>
       </div>
-    </>
+      <div></div>
+    </div>
   );
 }
 

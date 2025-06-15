@@ -63,6 +63,7 @@ eventBus.on("game:dice_rolled", (data) => {
   console.log(
     `Event: Player ${data.playerId} rolled ${data.roll} in game ${data.code}`
   );
+  console.log("amount", data.roll);
   connectionManager.broadcast({
     type: "roll",
     player: data.playerId,

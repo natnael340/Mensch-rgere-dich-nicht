@@ -96,8 +96,6 @@ export function useGame(
 
             case "move":
               if (msg.positions) {
-                // const _positions = { ...positions };
-                // _positions[msg.player] = msg.positions;
                 setPositions((prev) => ({
                   ...prev,
                   [msg.player]: msg.positions,
@@ -132,6 +130,16 @@ export function useGame(
 
             case "error":
               notifyUser(msg.message);
+              break;
+
+            case "kicked":
+              if (msg.positions) {
+                setPositions((prev) => ({
+                  ...prev,
+                  [msg.player]: msg.positions,
+                }));
+              }
+              break;
 
             default:
               console.warn("Unknown WS message:", msg);
