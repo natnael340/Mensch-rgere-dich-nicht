@@ -1,4 +1,5 @@
 from fastapi import WebSocket, WebSocketDisconnect
+from fastapi.websockets import WebSocketState
 from typing import Dict, List
 from app.utils.jwt import verify_token
 from app.manager import game_manager
@@ -18,7 +19,10 @@ class ConnectionManager:
 
     async def broadcast(self, code: str, message: dict):
         for connection in self.active_connections.get(code, []):
-            await connection.send_json(message)
+            if connection.client_state == WebSocketState.CONNECTED:
+                await connection.send_json(message)
+            else:
+                self.disconnect(code, connection)
     
     async def clear_game(self, code: str):
         connections = self.active_connections.pop(code, [])
