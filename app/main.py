@@ -1,5 +1,5 @@
 from fastapi import FastAPI, Request, HTTPException, Depends
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, PlainTextResponse
 import asyncio
 from contextlib import asynccontextmanager
 
@@ -38,12 +38,6 @@ async def lifespan(app: FastAPI):
     asyncio.create_task(raft_node.run())
 
 
-    # threading.Thread(target=start_raft_thread, daemon=True).start()
-
-    #start_raft_thread()
-
-
-
     yield  # This will run when the app starts
 
 
@@ -56,7 +50,7 @@ origins = [
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,      # your React app origin
+    allow_origins=["*"],      # your React app origin
     allow_credentials=True,
     allow_methods=["*"],        # GET, POST, OPTIONS, PUT, DELETE…
     allow_headers=["*"],        # Content-Type, Authorization…
@@ -68,7 +62,7 @@ async def raft_leader_middleware(request: Request, call_next):
     Middleware to check if the current node is the leader.
     If not, it raises a 503 Service Unavailable error.
     """
-    if request.url.path.endswith("/health"):
+    if request.method in ["GET", "HEAD", "OPTIONS"]:
         return await call_next(request)
     
     if raft_node and not await raft_node.is_leader():
@@ -90,8 +84,8 @@ async def health_check():
     """
     Health check endpoint to verify if the service is running.
     """
-    if raft_node and not await raft_node.is_leader():
-        raise HTTPException(status_code=503, detail="Not the leader node")
+    if raft_node and await raft_node.is_leader():
+        return PlainTextResponse("1", status_code=200)
+    return PlainTextResponse("0", status_code=200)
 
-app.include_router(router)  # Include the main API router with dependency injection for raft_node
-#app.include_router(raft_router, prefix="/raft")    
+app.include_router(router)

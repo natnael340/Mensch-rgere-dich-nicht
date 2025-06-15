@@ -21,7 +21,17 @@ class GameManager:
         return ''.join(random.choices(string.ascii_uppercase, k=length))
         
     def apply_command(self, cmd):
-        """Apply commands to the game manager."""
+        """
+        Apply commands to the game manager.
+
+        create_game: [code: str]
+        join_game: [code:str, player: {name: str, id: str, is_online: bool}]
+        roll_dice: [code:str, pending_roll:Optional[int], current_turn: int]
+        move_piece: [code:str, player_id: str, piece_index: int, new_position: int]
+        clear_game: [code:str]
+        start_game: [code:str]
+        set_player_state: [code:str, player_id: str, online: bool]
+        """
         cmd = json.loads(cmd)
         print(f"Applying command: {cmd['command']} with args: {cmd['args']}")
         if cmd["command"] == "create_game":
