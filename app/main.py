@@ -38,12 +38,6 @@ async def lifespan(app: FastAPI):
     asyncio.create_task(raft_node.run())
 
 
-    # threading.Thread(target=start_raft_thread, daemon=True).start()
-
-    #start_raft_thread()
-
-
-
     yield  # This will run when the app starts
 
 
@@ -90,9 +84,8 @@ async def health_check():
     """
     Health check endpoint to verify if the service is running.
     """
-    if raft_node and not await raft_node.is_leader():
-        return PlainTextResponse("0")
-    return PlainTextResponse("1")
+    if raft_node and await raft_node.is_leader():
+        return PlainTextResponse("1", status_code=200)
+    return PlainTextResponse("0", status_code=200)
 
-app.include_router(router)  # Include the main API router with dependency injection for raft_node
-#app.include_router(raft_router, prefix="/raft")    
+app.include_router(router)

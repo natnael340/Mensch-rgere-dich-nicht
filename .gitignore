@@ -29,4 +29,5 @@ client/.env
 .venv
 .env
 *.pyc
+
 server/node_modules
