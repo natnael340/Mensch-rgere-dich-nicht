@@ -108,7 +108,9 @@ class RaftNode extends EventEmitter {
       this.stubs[id] = client;
     }
 
-    console.info(`Node ${this.nodeId} initialized with ${peers.length} peers.`);
+    console.info(
+      `[${this.role}] Node ${this.nodeId} initialized with ${peers.length} peers.`
+    );
   }
 
   /**
