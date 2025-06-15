@@ -41,7 +41,7 @@ async def grpc_server():
     server = grpc.aio.server()
     node = [member for member in cfg["RAFT_CLUSTER"] if member["id"] == RAFT_NODE_ID][0]
     add_RaftServicer_to_server(RaftGRPCServicer(), server)
-    server.add_insecure_port(f"{node['host']}:{node['port']}")
+    server.add_insecure_port(f"0.0.0.0:{node['port']}")
     await server.start()
     print(f"gRPC server started on port {node['host']}:{node['port']}")
     await server.wait_for_termination()

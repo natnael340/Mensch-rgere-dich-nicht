@@ -105,7 +105,7 @@ async function startGrpcServer() {
   const server = new grpc.Server();
   server.addService(raftProto.Raft.service, raftServiceImpl);
 
-  const bindAddr = `${me.host}:${me.port}`;
+  const bindAddr = `0.0.0.0:${me.port}`;
   await new Promise((resolve, reject) => {
     server.bindAsync(
       bindAddr,

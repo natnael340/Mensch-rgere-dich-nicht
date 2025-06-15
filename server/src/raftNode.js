@@ -290,13 +290,16 @@ class RaftNode extends EventEmitter {
         const oldCommitIndex = this.commitIndex;
         this.commitIndex = Math.min(msg.leader_commit, this.log.length - 1);
         console.info(
-          `Node ${this.nodeId} updated commitIndex from ${oldCommitIndex} to ${this.commitIndex}`
+          `[${this.role}] Node ${this.nodeId} updated commitIndex from ${oldCommitIndex} to ${msg.leader_commit}`
         );
         await this.applyEntries();
       }
       return { term: this.currentTerm, success: true };
     } catch (err) {
-      console.error(`Node ${this.nodeId} error handling AppendEntries:`, err);
+      console.error(
+        `[${this.role}] Node ${this.nodeId} error handling AppendEntries:`,
+        err
+      );
       return { term: this.currentTerm, success: false };
     }
   }
@@ -313,10 +316,13 @@ class RaftNode extends EventEmitter {
       this.currentTerm += 1;
       this.votedFor = this.nodeId;
       console.info(
-        `Node ${this.nodeId} started election for term ${this.currentTerm}`
+        `[${this.role}] Node ${this.nodeId} started election for term ${this.currentTerm}`
       );
     } catch (err) {
-      console.error(`Node ${this.nodeId} error starting election:`, err);
+      console.error(
+        `[${this.role}] Node ${this.nodeId} error starting election:`,
+        err
+      );
     }
 
     let votes = 1; // vote for self
@@ -326,7 +332,7 @@ class RaftNode extends EventEmitter {
         if (reply.voteGranted) votes += 1;
       } catch (err) {
         console.info(
-          `Node ${this.nodeId} failed to get vote from ${peer.id}: ${err.message}`
+          `[${this.role}] Node ${this.nodeId} failed to get vote from ${peer.id}: ${err.message}`
         );
       }
     });
@@ -337,7 +343,7 @@ class RaftNode extends EventEmitter {
       if (votes >= majority) {
         this.role = Role.LEADER;
         console.info(
-          `Node ${this.nodeId} became LEADER with ${votes} votes in term ${this.currentTerm}`
+          `[${this.role}] Node ${this.nodeId} became LEADER with ${votes} votes in term ${this.currentTerm}`
         );
         for (const p of this.peers) {
           this.nextIndex[p.id] = this.log.length;
@@ -351,10 +357,15 @@ class RaftNode extends EventEmitter {
           this.heartbeatIntervalMs
         );
       } else {
-        console.info(`Node ${this.nodeId} failed election with ${votes} votes`);
+        console.info(
+          `[${this.role}] Node ${this.nodeId} failed election with ${votes} votes`
+        );
       }
     } catch (err) {
-      console.error(`Node ${this.nodeId} error finalizing election:`, err);
+      console.error(
+        `[${this.role}] Node ${this.nodeId} error finalizing election:`,
+        err
+      );
       this.role = Role.FOLLOWER; // fallback to follower if election fails
     }
   }
@@ -385,7 +396,7 @@ class RaftNode extends EventEmitter {
 
           if (reply.term > this.currentTerm) {
             console.warn(
-              `Node ${this.nodeId} discovered higher term from ${peer.id} (${reply.term} > ${this.currentTerm}), stepping down`
+              `[${this.role}] Node ${this.nodeId} discovered higher term from ${peer.id} (${reply.term} > ${this.currentTerm}), stepping down`
             );
             this.currentTerm = reply.term;
             this.role = Role.FOLLOWER;
@@ -403,7 +414,7 @@ class RaftNode extends EventEmitter {
               this.matchIndex[peer.id] = prevIdx + entries.length;
               this.nextIndex[peer.id] = this.matchIndex[peer.id] + 1;
               console.info(
-                `Node ${this.nodeId} successfully replicated ${
+                `[${this.role}] Node ${this.nodeId} successfully replicated ${
                   entries.length
                 } entries to ${
                   peer.id
@@ -416,7 +427,9 @@ class RaftNode extends EventEmitter {
             const oldNextIndex = this.nextIndex[peer.id];
             this.nextIndex[peer.id] = Math.max(0, this.nextIndex[peer.id] - 1);
             console.info(
-              `Node ${this.nodeId} received failed response from ${
+              `[${this.role}] Node ${
+                this.nodeId
+              } received failed response from ${
                 peer.id
               }, reducing nextIndex from ${oldNextIndex} to ${
                 this.nextIndex[peer.id]
@@ -436,7 +449,10 @@ class RaftNode extends EventEmitter {
       // After all heartbeats sent, check commit status
       this.updateCommitIndex();
     } catch (err) {
-      console.error(`Node ${this.nodeId} error sending heartbeats:`, err);
+      console.error(
+        `[${this.role}] Node ${this.nodeId} error sending heartbeats:`,
+        err
+      );
     }
   }
 
@@ -464,7 +480,7 @@ class RaftNode extends EventEmitter {
         const oldCommitIndex = this.commitIndex;
         this.commitIndex = n;
         console.info(
-          `Node ${
+          `[${this.role}] Node ${
             this.nodeId
           } (LEADER) updating commitIndex from ${oldCommitIndex} to ${
             this.commitIndex
@@ -482,7 +498,7 @@ class RaftNode extends EventEmitter {
   async applyEntries() {
     if (this.lastApplied < this.commitIndex) {
       console.info(
-        `Node ${this.nodeId} applying entries from index ${
+        `[${this.role}] Node ${this.nodeId} applying entries from index ${
           this.lastApplied + 1
         } to ${this.commitIndex}`
       );
@@ -500,7 +516,7 @@ class RaftNode extends EventEmitter {
         : "empty";
 
       console.info(
-        `Node ${this.nodeId} applying entry at index ${this.lastApplied}: term=${entry.term}, command=${commandPreview}`
+        `[${this.role}] Node ${this.nodeId} applying entry at index ${this.lastApplied}: term=${entry.term}, command=${commandPreview}`
       );
 
       // Emit event for game manager to handle
@@ -526,7 +542,7 @@ class RaftNode extends EventEmitter {
           now - this.lastHeartbeatMs > this.electionTimeoutMs
         ) {
           console.info(
-            `Node ${this.nodeId} election timeout (${
+            `[${this.role}] Node ${this.nodeId} election timeout (${
               now - this.lastHeartbeatMs
             }ms > ${this.electionTimeoutMs}ms), starting election`
           );
@@ -534,7 +550,7 @@ class RaftNode extends EventEmitter {
         }
       } catch (err) {
         console.error(
-          `Node ${this.nodeId} error checking election timeout:`,
+          `[${this.role}] Node ${this.nodeId} error checking election timeout:`,
           err
         );
       }
@@ -560,13 +576,13 @@ class RaftNode extends EventEmitter {
       const commandPreview =
         command.length > 30 ? `${command.substring(0, 30)}...` : command;
       console.info(
-        `Node ${this.nodeId} (LEADER) appending new entry: ${commandPreview}`
+        `[${this.role}] Node ${this.nodeId} (LEADER) appending new entry: ${commandPreview}`
       );
 
       this.log.push({ term: this.currentTerm, command });
       const newIndex = this.log.length - 1;
       console.info(
-        `Node ${this.nodeId} appended entry at index ${newIndex}, waiting for consensus...`
+        `[${this.role}] Node ${this.nodeId} appended entry at index ${newIndex}, waiting for consensus...`
       );
 
       // Track consensus progress
@@ -587,7 +603,7 @@ class RaftNode extends EventEmitter {
         const majority = Math.ceil((this.peers.length + 1) / 2);
 
         console.info(
-          `Node ${
+          `[${this.role}] Node ${
             this.nodeId
           } consensus check ${attemptCount}/${maxAttempts} for index ${newIndex}: ${count}/${
             this.peers.length + 1
@@ -599,7 +615,7 @@ class RaftNode extends EventEmitter {
           const oldCommitIndex = this.commitIndex;
           this.commitIndex = newIndex;
           console.info(
-            `Node ${this.nodeId} CONSENSUS REACHED for index ${newIndex}, updating commitIndex from ${oldCommitIndex} to ${this.commitIndex}`
+            `[${this.role}] Node ${this.nodeId} CONSENSUS REACHED for index ${newIndex}, updating commitIndex from ${oldCommitIndex} to ${this.commitIndex}`
           );
           await this.applyEntries();
           break;
@@ -608,7 +624,7 @@ class RaftNode extends EventEmitter {
         // If we lost leadership, exit early
         if (this.role !== Role.LEADER) {
           console.warn(
-            `Node ${this.nodeId} is no longer leader, abandoning consensus wait`
+            `[${this.role}] Node ${this.nodeId} is no longer leader, abandoning consensus wait`
           );
           throw new Error("Leadership lost during consensus");
         }
@@ -616,14 +632,17 @@ class RaftNode extends EventEmitter {
 
       if (!consensusReached) {
         console.error(
-          `Node ${this.nodeId} failed to reach consensus for index ${newIndex} after ${maxAttempts} attempts`
+          `[${this.role}] Node ${this.nodeId} failed to reach consensus for index ${newIndex} after ${maxAttempts} attempts`
         );
         throw new Error("Failed to reach consensus");
       }
 
       return true;
     } catch (err) {
-      console.error(`Node ${this.nodeId} error appending log entry:`, err);
+      console.error(
+        `[${this.role}] Node ${this.nodeId} error appending log entry:`,
+        err
+      );
       throw err;
     }
   }
@@ -643,7 +662,7 @@ class RaftNode extends EventEmitter {
    * Clean up resources (stop timers, close gRPC channels).
    */
   async shutdown() {
-    console.info(`Node ${this.nodeId} shutting down`);
+    console.info(`[${this.role}] Node ${this.nodeId} shutting down`);
     if (this.heartbeatTimer) {
       clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = null;
@@ -656,7 +675,7 @@ class RaftNode extends EventEmitter {
     for (const client of Object.values(this.stubs)) {
       client.close();
     }
-    console.info(`Node ${this.nodeId} shutdown complete`);
+    console.info(`[${this.role}] Node ${this.nodeId} shutdown complete`);
   }
 }
 

@@ -82,7 +82,7 @@ class RaftNode:
         self.stubs = {pid: RaftStub(chan) for pid, chan in self.channels.items()}
 
 
-        logger.info(f"Node {self.node_id} initialized with {len(peers)} peers")
+        logger.info(f"[{self.role}] Node {self.node_id} initialized with {len(peers)} peers")
 
     async def is_leader(self) -> bool:
         async with self.state_lock:
@@ -93,7 +93,7 @@ class RaftNode:
         """
         Send a RequestVote RPC to a peer.
         """
-        logger.info(f"Node {self.node_id} sending RequestVote to {peer['id']}")
+        #logger.info(f"[{self.role}] Node {self.node_id} sending RequestVote to {peer['id']}")
         req = PbRV(
             term=self.current_term,
             candidate_id=self.node_id,
@@ -201,7 +201,7 @@ class RaftNode:
             self.current_term += 1
             self.voted_for = self.node_id
             
-            logger.info(f"Node {self.node_id} started election for term {self.current_term}")
+            logger.info(f"[{self.role}] Node {self.node_id} started election for term {self.current_term}")
 
         votes = 1  # vote for self
         for peer in self.peers:
@@ -210,14 +210,14 @@ class RaftNode:
                 if reply.get("vote_granted"):
                     votes += 1
             except RetryError as e:
-                logger.info(f"Node {self.node_id} failed to get vote from {peer['id']}: {e}")
+                logger.info(f"[{self.role}] Node {self.node_id} failed to get vote from {peer['id']}: {e}")
                 continue
             
         async with self.state_lock:
             # Become leader on majority
             if votes > len(self.peers) // 2:
                 self.role = Role.LEADER
-                logger.info(f"Node {self.node_id} became LEADER with {votes} votes in term {self.current_term}")
+                logger.info(f"[{self.role}] Node {self.node_id} became LEADER with {votes} votes in term {self.current_term}")
                 for p in self.peers:
                     self.next_index[p['id']] = len(self.log)
                     self.match_index[p['id']] = -1
@@ -225,7 +225,7 @@ class RaftNode:
                     self.heartbeat_task.cancel()
                 self.heartbeat_task = asyncio.create_task(self.send_heartbeats())
             else:
-                logger.info(f"Node {self.node_id} failed election with {votes} votes")
+                logger.info(f"[{self.role}] Node {self.node_id} failed election with {votes} votes")
 
     # --------------------------------------------------------------------------
     # Heartbeats & log replication
@@ -260,17 +260,17 @@ class RaftNode:
                             self.current_term = reply["term"]
                             self.role = Role.FOLLOWER
                             self.voted_for = None
-                            logger.info(f"Node {self.node_id} stepped down to FOLLOWER due to higher term {reply['term']}")
+                            logger.info(f"[{self.role}] Node {self.node_id} stepped down to FOLLOWER due to higher term {reply['term']}")
                             return
                         
                         if reply.get("success"):
                             if entries:
                                 self.match_index[peer['id']] = prev_idx + len(entries)
                                 self.next_index[peer['id']] = self.match_index[peer['id']] + 1
-                                logger.info(f"Node {self.node_id} replicated to {peer['id']}, match_index: {self.match_index[peer['id']]}")
+                                logger.info(f"[{self.role}] Node {self.node_id} replicated to {peer['id']}, match_index: {self.match_index[peer['id']]}")
                         else:
                             self.next_index[peer['id']] = max(0, self.next_index[peer['id']] - 1)
-                            logger.info(f"Node {self.node_id} reduced next_index for {peer['id']} to {self.next_index[peer['id']]}")
+                            logger.info(f"[{self.role}] Node {self.node_id} reduced next_index for {peer['id']} to {self.next_index[peer['id']]}")
                         
                     except RetryError as e:
                             
@@ -311,7 +311,7 @@ class RaftNode:
                         and current_time - self.last_heartbeat
                         > self.election_timeout
                     ):
-                        logger.info(f"Node {self.node_id} election timeout({current_time - self.last_heartbeat}, {self.election_timeout}), starting election")
+                        logger.info(f"[{self.role}] Node {self.node_id} election timeout({current_time - self.last_heartbeat}, {self.election_timeout}), starting election")
                         should_start_election = True
 
                 if should_start_election:
@@ -377,12 +377,12 @@ class RaftNode:
                         count += 1
                 if count >= majority:
                     self.commit_index = new_index
-                    logger.info(f"Node {self.node_id} committed log entry at index {new_index}")
+                    logger.info(f"[{self.role}] Node {self.node_id} committed log entry at index {new_index}")
                     break
-                logger.info(f"Node {self.node_id} waiting for majority to commit log entry at index {new_index}, current count: {count}")
+                logger.info(f"[{self.role}] Node {self.node_id} waiting for majority to commit log entry at index {new_index}, current count: {count}")
 
                 if self.role != Role.LEADER:
-                    logger.info(f"Node {self.node_id} stepped down from leader while waiting for commit")
+                    logger.info(f"[{self.role}] Node {self.node_id} stepped down from leader while waiting for commit")
                     return
             await asyncio.sleep(0.5)
 
@@ -394,12 +394,12 @@ class RaftNode:
         
     async def shutdown(self) -> None:
         """Clean up resources, clos ing gRPC channels."""
-        logger.info(f"Node {self.node_id} shutting down")
+        logger.info(f"[{self.role}] Node {self.node_id} shutting down")
         if self.heartbeat_task:
             self.heartbeat_task.cancel()
         for channel in self.channels.values():
             await channel.close()
-        logger.info(f"Node {self.node_id} shutdown complete")
+        logger.info(f"[{self.role}] Node {self.node_id} shutdown complete")
 
 
 
