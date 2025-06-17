@@ -607,7 +607,7 @@ class RaftNode extends EventEmitter {
         console.info(
           `[${this.role}] Node ${
             this.nodeId
-          } consensus check ${attemptCount}/${maxAttempts} for index ${newIndex}: ${count}/${
+          } consensus check for index ${newIndex}: ${count}/${
             this.peers.length + 1
           } nodes, need ${majority}`
         );

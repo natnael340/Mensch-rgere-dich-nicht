@@ -121,7 +121,7 @@ const wss = new WebSocket.Server({
 app.post("/game", async (req, res) => {
   console.log("Creating a new game");
   try {
-    const game = gameManager.createGame();
+    const game = await gameManager.createGame();
     res.json({ code: game.code });
   } catch (error) {
     res.status(400).json({ error: error.message });
@@ -137,10 +137,10 @@ app.get("/health", (req, res) => {
   }
 });
 
-app.post("/game/join", (req, res) => {
+app.post("/game/join", async (req, res) => {
   try {
     const { name, code } = req.body;
-    const [game, player] = gameManager.joinOrCreateGame(name, code);
+    const [game, player] = await gameManager.joinOrCreateGame(name, code);
     const token = createToken(player.id, player.name);
 
     res.json({

@@ -61,14 +61,14 @@ class GameManager {
    * Create a new game
    * @returns {Game} The created game
    */
-  createGame() {
+  async createGame() {
     let code = generateGameCode();
     while (this.games[code]) {
       code = generateGameCode();
     }
 
     // Send the create_game command through Raft consensus
-    raftGameCommand("create_game", [code]);
+    await raftGameCommand("create_game", [code]);
     this._createGame(code);
 
     // The actual game will be created by applyCommand when consensus is reached
@@ -162,7 +162,7 @@ class GameManager {
    * @param {string} code - Game code (optional)
    * @returns {Array} Game and player objects
    */
-  joinOrCreateGame(name, code = null) {
+  async joinOrCreateGame(name, code = null) {
     const playerId = this.nameToUuid(name);
     const player = { id: playerId, name };
 
@@ -176,7 +176,7 @@ class GameManager {
         if (!game) {
           throw new Error("Game not found after joining.");
         }
-        raftGameCommand("join_game", [code, player]);
+        await raftGameCommand("join_game", [code, player]);
         this._joinGame(code, player);
 
         return [game, player];
@@ -256,7 +256,7 @@ class GameManager {
    * @param {string} playerId - Player ID
    * @returns {Array} Roll result and next player
    */
-  rollDice(code, playerId) {
+  async rollDice(code, playerId) {
     const game = this.getGame(code);
 
     if (game.pending_roll !== null) {
@@ -281,6 +281,13 @@ class GameManager {
       nextTurn = game.players[game.current_turn];
     }
 
+    // Save state via Raft for followers to sync
+    await raftGameCommand("roll_dice", [
+      code,
+      game.pending_roll,
+      game.current_turn,
+    ]);
+
     // Emit event (leader only)
     eventBus.emit("game:dice_rolled", {
       code,
@@ -288,9 +295,6 @@ class GameManager {
       roll,
       nextTurn,
     });
-
-    // Save state via Raft for followers to sync
-    raftGameCommand("roll_dice", [code, game.pending_roll, game.current_turn]);
 
     return [roll, nextTurn];
   }
@@ -302,7 +306,7 @@ class GameManager {
    * @param {number} pieceIndex - Piece index (0-3)
    * @returns {Array} Updated positions, next player, and win status
    */
-  movePiece(code, playerId, pieceIndex) {
+  async movePiece(code, playerId, pieceIndex) {
     const game = this.getGame(code);
 
     // Validate move
@@ -339,6 +343,15 @@ class GameManager {
     }
 
     // Emit event
+
+    // Save the move through Raft consensus
+    await raftGameCommand("move_piece", [
+      code,
+      playerId,
+      pieceIndex,
+      newPosition,
+    ]);
+
     eventBus.emit("game:piece_moved", {
       code,
       playerId,
@@ -346,9 +359,6 @@ class GameManager {
       nextPlayer: nextPlayer,
       justWon,
     });
-
-    // Save the move through Raft consensus
-    raftGameCommand("move_piece", [code, playerId, pieceIndex, newPosition]);
 
     return [game.positions[playerId], nextPlayer, justWon, skip];
   }

@@ -14,7 +14,9 @@ function Lobby() {
 
   useEffect(() => {
     const playerId = localStorage.getItem(`player_id-${code}`);
-    setIsHost(players[0].id == playerId);
+    if (players.length != 0) {
+      setIsHost(players[0].id == playerId);
+    }
 
     const ws = createAutoReconnectingWebSocket(
       `${import.meta.env.VITE_APP_WS_URL}/game/${code}`,
@@ -27,6 +29,9 @@ function Lobby() {
           if (msg.type == "player_joined") {
             console.log("Player joined", msg);
             if (!players.find((p) => p.id == msg.player.id)) {
+              if (players.length == 0) {
+                setIsHost(msg.player.id == playerId);
+              }
               setPlayers((prev) => [...prev, { ...msg.player, joined: true }]);
             } else {
               setPlayers((prev) => {
