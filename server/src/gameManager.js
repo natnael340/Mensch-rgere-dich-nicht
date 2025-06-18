@@ -289,7 +289,7 @@ class GameManager {
     // }
 
     // Save state via Raft for followers to sync
-    await raftGameCommand("roll_dice", [code, _pending_roll, _current_turn]);
+    await raftGameCommand("roll_dice", [code, _pendingRoll, _currentTurn]);
 
     game.pending_roll = _pendingRoll;
     game.current_turn = _currentTurn;
@@ -353,7 +353,7 @@ class GameManager {
 
   getMovableTokens(game, playerId, roll) {
     const movable = [];
-    for (let idx = 0; idx < game.positions[playerId].length; idx++) {
+    for (let idx = 0; idx < 4; idx++) {
       try {
         this.getTokenNewPosition(game, playerId, idx, roll);
         movable.push(idx);
@@ -390,7 +390,7 @@ class GameManager {
     let skip = false;
 
     if (newPosition < 40) {
-      for (const pid in Object.keys(game.positions)) {
+      for (const pid in game.positions) {
         if (pid !== playerId) {
           const positions = game.positions[pid];
           for (let i = 0; i < positions.length; i++) {
@@ -434,7 +434,7 @@ class GameManager {
     let nextPlayer = null;
 
     if (!justWon) {
-      game.current_turn = this.getNextPlayer(game);
+      game.current_turn = this.getNextPlayer(game.code);
       nextPlayer = game.players[game.current_turn];
     }
 

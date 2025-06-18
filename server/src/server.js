@@ -244,16 +244,16 @@ wss.on("connection", (ws, req) => {
             ws.send(JSON.stringify({ type: "error", message: error.message }));
 
             // You might still want to maintain this error handling for moves
-            const game = gameManager.getGame(gameCode);
-            if (game) {
-              game.pending_roll = null;
-              game.current_turn = (game.current_turn + 1) % game.players.length;
-              connectionManager.broadcast({
-                type: "state",
-                positions: game.positions,
-                next_turn: game.players[game.current_turn],
-              });
-            }
+            // const game = gameManager.getGame(gameCode);
+            // if (game) {
+            //   game.pending_roll = null;
+            //   game.current_turn = (game.current_turn + 1) % game.players.length;
+            //   connectionManager.broadcast({
+            //     type: "state",
+            //     positions: game.positions,
+            //     next_turn: game.players[game.current_turn],
+            //   });
+            // }
           }
         }
       } catch (error) {
