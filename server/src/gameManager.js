@@ -269,24 +269,30 @@ class GameManager {
 
     // Calculate roll and state changes
     const roll = Math.floor(Math.random() * 6) + 1;
+    let _pendingRoll = roll;
+    let _currentTurn = game.current_turn;
     let nextTurn = null;
 
-    // Update local state (leader only)
-    game.pending_roll = roll;
-
-    if (roll !== 6 && game.positions[playerId].every((pos) => pos === -1)) {
-      // If roll isn't 6 and all pieces are home, move to next player
-      game.pending_roll = null;
-      game.current_turn = (game.current_turn + 1) % game.players.length;
-      nextTurn = game.players[game.current_turn];
+    let movable = this.getMovableTokens(game, playerId, roll);
+    if (movable.length == 0) {
+      _pendingRoll = null;
+      _currentTurn = this.getNextPlayer(game.code);
+      nextTurn = game.players[_currentTurn];
     }
 
+    // 155: UPDATE
+    // if (roll !== 6 && game.positions[playerId].every((pos) => pos === -1)) {
+    //   // If roll isn't 6 and all pieces are home, move to next player
+    //   game.pending_roll = null;
+    //   game.current_turn = (game.current_turn + 1) % game.players.length;
+    //   nextTurn = game.players[game.current_turn];
+    // }
+
     // Save state via Raft for followers to sync
-    await raftGameCommand("roll_dice", [
-      code,
-      game.pending_roll,
-      game.current_turn,
-    ]);
+    await raftGameCommand("roll_dice", [code, _pending_roll, _current_turn]);
+
+    game.pending_roll = _pendingRoll;
+    game.current_turn = _currentTurn;
 
     // Emit event (leader only)
     eventBus.emit("game:dice_rolled", {
@@ -297,6 +303,65 @@ class GameManager {
     });
 
     return [roll, nextTurn];
+  }
+  positionTaken(positions, newPosition, index) {
+    for (let i = 0; i < positions.length; i++) {
+      if (i !== index && positions[i] === newPosition) {
+        throw new Error("Position already taken.");
+      }
+    }
+  }
+
+  getTokenNewPosition(game, playerId, tokenIdx, roll) {
+    const positions = game.positions[playerId];
+    const currentPosition = positions[tokenIdx];
+    const start = game.startOffset[playerId];
+    let newPosition;
+
+    if (currentPosition === -1) {
+      if (roll === 6) {
+        newPosition = start;
+      } else {
+        throw new Error("Need 6 to move out of home.");
+      }
+    } else if (currentPosition >= 0 && currentPosition < 40) {
+      const stepFromStart = (currentPosition - start) % 40;
+      const total = stepFromStart + roll;
+
+      if (total < 40) {
+        newPosition = (currentPosition + roll) % 40;
+      } else {
+        const finishPosition = total - 40;
+        if (finishPosition > 3) {
+          throw new Error("Roll too large to enter finish lane.");
+        }
+        newPosition = 40 + finishPosition;
+      }
+    } else {
+      const finishStep = currentPosition - 40 + roll;
+      if (finishStep > 3) {
+        throw new Error("Roll too large to move in finish lane.");
+      }
+      newPosition = currentPosition + roll;
+    }
+
+    // Mark the new position as taken (assumes a method positionTaken exists)
+    this.positionTaken(game.positions[playerId], newPosition, tokenIdx);
+
+    return newPosition;
+  }
+
+  getMovableTokens(game, playerId, roll) {
+    const movable = [];
+    for (let idx = 0; idx < game.positions[playerId].length; idx++) {
+      try {
+        this.getTokenNewPosition(game, playerId, idx, roll);
+        movable.push(idx);
+      } catch (e) {
+        // token cannot move, ignore
+      }
+    }
+    return movable;
   }
 
   /**
@@ -312,23 +377,53 @@ class GameManager {
     // Validate move
     this.validateMove(game, playerId, pieceIndex);
 
-    const positions = game.positions[playerId];
-    const currentPosition = positions[pieceIndex];
-    const start = game.startOffset[playerId];
+    // const positions = game.positions[playerId];
+    // const currentPosition = positions[pieceIndex];
+    // const start = game.startOffset[playerId];
 
-    let [newPosition, skip] = this.calculateNewPosition(
-      currentPosition,
-      game.pending_roll,
-      start
-    );
-
-    // Handle collision with opponent pieces
-    const collisionSkip = this.handleOpponentCollision(
+    let newPosition = this.getTokenNewPosition(
       game,
       playerId,
-      newPosition
+      pieceIndex,
+      game.pending_roll
     );
-    skip = skip || collisionSkip;
+    let skip = false;
+
+    if (newPosition < 40) {
+      for (const pid in Object.keys(game.positions)) {
+        if (pid !== playerId) {
+          const positions = game.positions[pid];
+          for (let i = 0; i < positions.length; i++) {
+            if (positions[i] === newPosition) {
+              skip = true;
+              game.positions[pid][i] = -1;
+            }
+          }
+        }
+      }
+    }
+
+    await raftGameCommand("move_piece", [
+      code,
+      playerId,
+      pieceIndex,
+      newPosition,
+    ]);
+
+    // 155: UPDATE
+    // let [newPosition, skip] = this.calculateNewPosition(
+    //   currentPosition,
+    //   game.pending_roll,
+    //   start
+    // );
+
+    // // Handle collision with opponent pieces
+    // const collisionSkip = this.handleOpponentCollision(
+    //   game,
+    //   playerId,
+    //   newPosition
+    // );
+    // skip = skip || collisionSkip;
 
     // Update piece position and reset pending roll
     game.positions[playerId][pieceIndex] = newPosition;
@@ -339,18 +434,13 @@ class GameManager {
     let nextPlayer = null;
 
     if (!justWon) {
-      nextPlayer = this.determineNextPlayer(game);
+      game.current_turn = this.getNextPlayer(game);
+      nextPlayer = game.players[game.current_turn];
     }
 
     // Emit event
 
     // Save the move through Raft consensus
-    await raftGameCommand("move_piece", [
-      code,
-      playerId,
-      pieceIndex,
-      newPosition,
-    ]);
 
     eventBus.emit("game:piece_moved", {
       code,
@@ -469,7 +559,7 @@ class GameManager {
 
   // Check if player has won
   checkWinCondition(positions) {
-    return positions.every((pos) => pos == 43);
+    return positions.every((pos) => pos == 40);
   }
 
   _startGame(game) {

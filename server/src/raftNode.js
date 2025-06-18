@@ -612,7 +612,7 @@ class RaftNode extends EventEmitter {
           } nodes, need ${majority}`
         );
 
-        if (count >= majority) {
+        if (count > majority) {
           consensusReached = true;
           const oldCommitIndex = this.commitIndex;
           this.commitIndex = newIndex;
