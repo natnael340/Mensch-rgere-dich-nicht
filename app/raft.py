@@ -1,4 +1,5 @@
 import os
+import logging
 import asyncio
 import grpc
 import json
@@ -13,6 +14,12 @@ from app.raft_grpc.raft_pb2 import (
     LogEntry as LogEntryProto,
 )
 from app.raft_grpc.raft_pb2_grpc import RaftServicer, add_RaftServicer_to_server
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] [%(name)s] %(message)s",
+)
+logger = logging.getLogger(__name__)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 RAFT_NODE_ID = os.getenv("RAFT_NODE_ID", "node1")
@@ -51,7 +58,7 @@ def startup_event():
 
     node_id = RAFT_NODE_ID
     cluster = cfg["RAFT_CLUSTER"]
-    print(node_id)
+    logger.info(f"Running on Node: {node_id}")
     peers = [member for member in cluster if member["id"] != node_id]
     global raft_node
 
@@ -64,15 +71,15 @@ def raft_command(command: str):
     def decorator(func):
         async def wrapper(*args, **kwargs):
             
-            print(f"Executing command: {command} with code: ")
-            print(json.dumps(args[1:]))
-            print("Syncing with Raft cluster...")
+            logger.debug(f"Executing command: {command} with args: ")
+            logger.debug(json.dumps(args[1:]))
+            logger.debug("Syncing with Raft cluster...")
             
             entry = json.dumps({"command": command, "args": args[1:]})
             await raft_node.append_log_entry(entry)
                         
             # Here we would typically wait for the Raft consensus to be reached
-            print("Command synced with Raft cluster.")
+            logger.debug("Command synced with Raft cluster.")
             return await func(*args, **kwargs)
         return wrapper
     return decorator

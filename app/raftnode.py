@@ -70,7 +70,7 @@ class RaftNode:
         self.next_index: Dict[str, int] = {peer['id']: 0 for peer in peers}
         self.match_index: Dict[str, int] = {peer['id']: -1 for peer in peers}
 
-        self.last_heartbeat = asyncio.get_event_loop().time()
+        self.last_heartbeat = self.now()
         self.heartbeat_task: Optional[asyncio.Task] = None
         self.state_lock: asyncio.Lock = asyncio.Lock()
 
@@ -83,6 +83,11 @@ class RaftNode:
 
 
         logger.info(f"Node {self.node_id} initialized with {len(peers)} peers")
+
+    
+    def now(self) -> float:
+
+        return asyncio.get_event_loop().time()
 
     async def is_leader(self) -> bool:
         async with self.state_lock:
@@ -158,16 +163,14 @@ class RaftNode:
         """
         Handle incoming AppendEntries RPC; replication and heartbeat.
         """ 
-        #print(f"Node {self.node_id} handling AppendEntries from {msg}")
         async with self.state_lock:
-            #logger.info(f"Node {self.node_id} [{self.role}] handling AppendEntries from {msg.leader_id}, term {msg.term}")
             if msg.term < self.current_term:
                 return AppendEntriesReply(term=self.current_term, success=False)
             
             self.current_term = msg.term
             self.leader_id = msg.leader_id
             self.role = Role.FOLLOWER
-            self.last_heartbeat = asyncio.get_event_loop().time()
+            self.last_heartbeat = self.now()
             self.voted_for = None
 
             if msg.prev_log_index >= 0:
@@ -238,7 +241,6 @@ class RaftNode:
         """
         
         while self.role == Role.LEADER:
-            
             async with self.state_lock: 
                 for peer in self.peers:
                     prev_idx = self.next_index[peer['id']] - 1
@@ -288,7 +290,7 @@ class RaftNode:
         Apply all newly committed log entries to the in-memory state dict.
         """
         from app.manager import game_manager # game state
-        print("Applying committed entries")
+        logger.info("Applying committed entries")
         while self.last_applied < self.commit_index:
             self.last_applied += 1
             entry = self.log[self.last_applied]
@@ -297,32 +299,6 @@ class RaftNode:
     # --------------------------------------------------------------------------
     # Main loop: handle timeouts and incoming HTTP RPCs
     # --------------------------------------------------------------------------
-
-    async def election_loop(self, queue: asyncio.Queue) -> None:
-        self.my_queue = queue
-        try:
-            while True:
-                # Check for election timeout
-                current_time = asyncio.get_event_loop().time()
-                should_start_election = False
-                async with self.state_lock:
-                    if (
-                        self.role != Role.LEADER
-                        and current_time - self.last_heartbeat
-                        > self.election_timeout
-                    ):
-                        logger.info(f"Node {self.node_id} election timeout({current_time - self.last_heartbeat}, {self.election_timeout}), starting election")
-                        should_start_election = True
-
-                if should_start_election:
-                    await self.start_election()
-                await asyncio.sleep(self.election_timeout / 2) 
-        except asyncio.CancelledError:
-            logger.info(f"Node {self.node_id} run loop cancelled")
-            await self.shutdown()
-            raise
-
-
 
     async def run(self) -> None:
         """
@@ -333,11 +309,10 @@ class RaftNode:
         # handle_request_vote and handle_append_entries directly.
         
         # Election & heartbeat monitoring
-        self.my_queue = asyncio.Queue()
         try:
             while True:
                 # Check for election timeout
-                current_time = asyncio.get_event_loop().time()
+                current_time = self.now()
                 should_start_election = False
                 async with self.state_lock:
                     if (
@@ -385,12 +360,6 @@ class RaftNode:
                     logger.info(f"Node {self.node_id} stepped down from leader while waiting for commit")
                     return
             await asyncio.sleep(0.5)
-
-        
-                
-        
-
-       
         
     async def shutdown(self) -> None:
         """Clean up resources, clos ing gRPC channels."""

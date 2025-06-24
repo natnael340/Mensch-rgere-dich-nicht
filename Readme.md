@@ -1,5 +1,7 @@
 # Mensch ärgere Dich nicht
 
+![Game play](image.png)
+
 A distributed implementation of the classic board game **Mensch ärgere Dich nicht**, built with Raft consensus and gRPC for inter-node communication. The game state is stored in-memory for low-latency operations, and NGINX (with Lua) acts as a front-end proxy/load balancer.
 
 ---
@@ -44,7 +46,6 @@ Before you begin, ensure you have the following installed:
 - **Node.js (v14+) & npm** (for the front-end client)
 - **Python 3.10+** (for the server and Raft node implementation)
 - **OpenResty** (NGINX bundled with LuaJIT)
-- **luarocks** (or another Lua package manager)
 
 Required Lua modules (install via LuaRocks or manually):
 
@@ -57,19 +58,20 @@ Required Lua modules (install via LuaRocks or manually):
 Mensch-ärgere-dich-nicht/
 ├── README.md                 # This file
 ├── app/                      # Python backend & Raft node implementation
-│   ├── config/               # Configuration files
-│   │   └── raft.yml          # Raft cluster definitions (node IDs, peers, etc.)
+│   ├── raft_grpc/            # gRPC service definitions & stubs
+│   ├── utils/                # JWT and other helpers
+│   ├── api.py                # REST & Web Socket endpoints
 │   ├── main.py               # Uvicorn entrypoint (FastAPI + gRPC endpoints)
-│   ├── raft_state_machine.py # In-memory game state & Raft integration
-│   ├── grpc_services.py      # Protobuf stubs & service definitions
-│   └── requirements.txt      # Python dependencies (FastAPI, gRPC, etc.)
+│   ├── manager.py            # Game state and logic manager
+│   ├── raft_node.py          # Raft node implementation
+│   ├── raft.py               # Raft & GRPC controller
 ├── client/                   # Front-end UI (Next.js / React)
 │   ├── package.json
 │   ├── public/
 │   └── src/
-├── nginx/                    # NGINX/OpenResty configuration
-│   └── nginx.conf            # Proxy/load-balancer setup with Lua scripts
-└── scripts/                  # Utility scripts (optional)
+├── nginx.conf                # Proxy/load-balancer setup with Lua scripts
+├── raft.proto                # Raft protocol definitions
+└── raft.yaml                 # Raft configuration
 ```
 
 ## Installation & Configuration
@@ -127,11 +129,11 @@ Alternatively, if you prefer to vendor the modules, place them in `nginx/lua/` o
 2. **Copy the app’s NGINX config** into the OpenResty folder:
 
    ```bash
-   sudo cp nginx/nginx.conf /usr/local/openresty/nginx/conf/nginx.conf
+   sudo cp nginx.conf /usr/local/openresty/nginx/conf/nginx.conf
    ```
 
-   - The provided `nginx/nginx.conf` contains Lua scripts to route incoming traffic to Raft nodes.
-   - Edit this file to add or remove upstream nodes (e.g., `node1:8081`, `node2:8082`, etc.).
+   - The provided `nginx.conf` contains Lua scripts to route incoming traffic to Raft nodes.
+   - Edit this file to add or remove upstream nodes (e.g., `192.168.48.1:8081`, `192.168.48.1:8082`, etc.).
 
 3. **Reload or start OpenResty**:
 
@@ -148,9 +150,9 @@ The Raft cluster settings are in `app/config/raft.yml`. Example:
 ```yaml
 nodes:
   node1:
-    host: 127.0.0.1
-    port: 50051
-    server: "127.0.0.1:8081"
+    host: 127.0.0.1 # GRPC server
+    port: 50051 # GRPC port
+    server: "127.0.0.1:8081" # web server ip:port
   node2:
     host: 127.0.0.1
     port: 50052
@@ -168,7 +170,8 @@ nodes:
 
 ### Start Front-End Client
 
-In a terminal, navigate to the `client/` folder:
+In a terminal, navigate to the `client/` folder"
+Rename `.env.example` to `.env` and change the ip to your ip.
 
 ```bash
 cd client
@@ -176,7 +179,7 @@ npm install
 npm run dev
 ```
 
-- The front end typically runs on `http://localhost:3000`.
+- The front end typically runs on `http://localhost:5173`.
 - The UI will connect (via HTTP/WebSocket) to NGINX, which proxies to a Raft leader node.
 
 ### Start Raft Nodes
@@ -185,28 +188,25 @@ Open separate terminals for each node. From the project root, run:
 
 ```bash
 # Terminal for node1:
-export RAFT_NODE_ID="node1"
-uvicorn app.main:app --reload --port 8081 --host 0.0.0.0
+RAFT_NODE_ID="node1" uvicorn app.main:app --reload --port 8081 --host 0.0.0.0
 
 # Terminal for node2:
-export RAFT_NODE_ID="node2"
-uvicorn app.main:app --reload --port 8082 --host 0.0.0.0
+RAFT_NODE_ID="node2" uvicorn app.main:app --reload --port 8082 --host 0.0.0.0
 
 # Terminal for node3:
-export RAFT_NODE_ID="node3"
-uvicorn app.main:app --reload --port 8083 --host 0.0.0.0
+RAFT_NODE_ID="node3" uvicorn app.main:app --reload --port 8083 --host 0.0.0.0
 ```
 
-- Each node reads `RAFT_NODE_ID` and looks up its host/port/peers in `app/config/raft.yml`.
+- Each node reads `RAFT_NODE_ID` and looks up its host/port/peers in `raft.yml`.
 - Raft leader election occurs automatically; the leader handles client requests and replicates state to followers.
 
 ## Adding / Removing Nodes
 
-1. **Edit `nginx/nginx.conf`**:
+1. **Edit `nginx.conf`**:
 
-   - Update the upstream block to add or remove server entries (e.g., `server 127.0.0.1:8084;`).
+   - Update the upstream block to add or remove server entries (e.g., `{ host = "192.168.48.1", port = 8084 }`).
 
-2. **Edit `app/config/raft.yml`** on every node:
+2. **Edit `raft.yml`** on every node:
 
    - Modify the `nodes:` section by adding or removing entries (e.g., `node4: { host: 127.0.0.1, port: 8084 }`).
 
@@ -217,21 +217,6 @@ uvicorn app.main:app --reload --port 8083 --host 0.0.0.0
 
 Raft will adjust to the new quorum automatically.
 
-## Project Structure
-
 ```
-Mensch-ärgere-dich-nicht/
-├── README.md                 # Project README
-├── app/                      # Server & Raft node implementation
-│   ├── config/
-│   │   └── raft.yml          # Raft cluster definitions
-│   ├── main.py               # FastAPI + gRPC entrypoint
-│   ├── raft_state_machine.py # In-memory state & Raft logic
-│   ├── grpc_services.py      # Protobuf stubs & services
-│   └── requirements.txt      # Python dependencies
-├── client/                   # Front-end UI (Next.js / React)
-│   ├── package.json
-│   ├── public/
-│   └── src/
-└── nginx.conf                  # NGINX/OpenResty configuration
+
 ```
