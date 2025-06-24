@@ -56,11 +56,12 @@ class GameManager:
             game = self.games[code]
 
             game.positions[player_id][piece_index] = new_position
+            _pending_roll = game.pending_roll
             game.pending_roll = None
 
             just_won = all(pos >= 40 for pos in game.positions[player_id])
             if not just_won:
-                game.current_turn = self.get_next_turn(game)
+                game.current_turn = self.get_next_turn(game, last_roll=_pending_roll)
         
         elif cmd["command"] == "clear_game":
             code = cmd['args'][0]
@@ -120,7 +121,7 @@ class GameManager:
     def find_available_game(self):
         """Find an available game."""
         for game in self.games.values():
-            if len(game.players) < MAXIMUM_ALLOWED_PLAYERS:
+            if len(game.players) < MAXIMUM_ALLOWED_PLAYERS and not game.started:
                 return game
         return None
     
@@ -232,8 +233,11 @@ class GameManager:
         
         return new_position
     
-    def get_next_turn(self, game: Game):
+    def get_next_turn(self, game: Game, last_roll: Optional[int] = None) -> int:
         """Get the next player's turn."""
+        if last_roll is not None and last_roll == 6:
+            return game.current_turn
+        
         for i in range(1, len(game.players)+1):
             iplayer = (game.current_turn + i) % len(game.players)
             if game.players[iplayer].is_online:
@@ -245,11 +249,12 @@ class GameManager:
         game = self.games[code]
 
         game.positions[player_id][piece_index] = new_position
+        _pending_roll = game.pending_roll
         game.pending_roll = None
 
         just_won = all(pos >= 40 for pos in game.positions[player_id])
         if not just_won:
-            game.current_turn = self.get_next_turn(game)
+            game.current_turn = self.get_next_turn(game, last_roll=_pending_roll)
             next_player = game.players[game.current_turn]
         else:
             next_player = None

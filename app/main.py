@@ -4,7 +4,7 @@ import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi.middleware.cors import CORSMiddleware
-from app.api import router, set_raft_node
+from app.api import router
 from app.raft import router as raft_router, startup_event, grpc_server, cfg
 from app.utils.util import load_yaml
 from app.raftnode import RaftNode
@@ -13,26 +13,26 @@ from app.raftnode import RaftNode
 raft_node: RaftNode = None
 
 
-def start_raft_thread():
-    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+# def start_raft_thread():
+#     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    global raft_node
+#     loop = asyncio.new_event_loop()
+#     asyncio.set_event_loop(loop)
+#     global raft_node
     
-    raft_node = startup_event()
-    set_raft_node(raft_node)
+#     raft_node = startup_event()
+#     set_raft_node(raft_node)
 
-    loop.create_task(grpc_server())
-    loop.create_task(raft_node.run())
-    loop.run_forever()
+#     loop.create_task(grpc_server())
+#     loop.create_task(raft_node.run())
+#     loop.run_forever()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global raft_node
     
     raft_node = startup_event()
-    set_raft_node(raft_node)
+    app.state.raft_node = raft_node
 
     asyncio.create_task(grpc_server())
     asyncio.create_task(raft_node.run())
@@ -63,6 +63,7 @@ async def raft_leader_middleware(request: Request, call_next):
     If not, it raises a 503 Service Unavailable error.
     """
     if request.method in ["GET", "HEAD", "OPTIONS"]:
+        
         return await call_next(request)
     
     if raft_node and not await raft_node.is_leader():
